@@ -13,7 +13,6 @@ import {
 
 function App() {
   const viewportRef = useRef(null)
-  const canvas2dRef = useRef(null)
   const controllerRef = useRef(null)
   const [viewState, setViewState] = useState(() => createInitialViewState())
 
@@ -27,7 +26,6 @@ function App() {
     controllerRef.current = controller
     controller.mount({
       viewportEl: viewportRef.current,
-      canvas2d: canvas2dRef.current,
     })
 
     return () => {
@@ -56,14 +54,8 @@ function App() {
 
       <div id="xhair" className={viewState.pointerLocked ? 'on' : ''} />
 
-      <PointerLockPrompt visible={!viewState.pointerLocked} />
+      <PointerLockPrompt visible={!viewState.pointerLocked && !viewState.cinematicActive} />
       <ControlsHelp />
-
-      {!viewState.entryVisible && viewState.mode3D ? (
-        <button id="mode-btn" onClick={() => controller?.toggleMode()}>
-          Vista 2D
-        </button>
-      ) : null}
 
       <TrainingPanel
         training={viewState.training}
@@ -73,15 +65,6 @@ function App() {
 
       <div id="arrow-hint">
         <b>&larr; &rarr;</b> navegar pasos · <b>ESPACIO</b> auto-entrenar
-      </div>
-
-      <div id="c2wrap" className={!viewState.mode3D ? 'show' : ''}>
-        <canvas id="c2d" ref={canvas2dRef} />
-        {!viewState.mode3D ? (
-          <button id="back-btn" onClick={() => controller?.toggleMode()}>
-            &larr; Vista 3D
-          </button>
-        ) : null}
       </div>
 
       {viewState.entryVisible ? (

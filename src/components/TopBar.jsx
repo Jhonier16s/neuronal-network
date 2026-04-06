@@ -2,7 +2,7 @@ function TopBar({ architectureLabel, connectionCount, epoch, mouseLabel }) {
   return (
     <div id="top-bar">
       <div id="ttl">
-        <h1>Neural Network</h1>
+        <h1>AI Training Chamber</h1>
         <p>{mouseLabel}</p>
       </div>
 

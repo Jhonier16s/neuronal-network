@@ -21,6 +21,20 @@ function TrainingPanel({ training, onStepBack, onStepForward }) {
         <span className="train-lbl">Estado</span>
         <span className={`train-val ${training.statusTone}`}>{training.statusText}</span>
       </div>
+      <div className="train-row train-row-stack">
+        <span className="train-lbl">Muestra</span>
+        <span className="train-val mono">{training.sampleText}</span>
+      </div>
+      <div className="train-row train-row-stack">
+        <span className="train-lbl">Visual</span>
+        <span className="train-val mono dimmed">{training.visualText}</span>
+      </div>
+
+      <div className="signal-legend" aria-hidden="true">
+        <span className="signal-chip forward">Forward</span>
+        <span className="signal-chip backward">Backprop</span>
+        <span className="signal-chip field">Campo XOR</span>
+      </div>
 
       <LossChart
         losses={training.losses}

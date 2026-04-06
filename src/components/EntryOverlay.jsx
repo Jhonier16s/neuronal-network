@@ -5,7 +5,8 @@ const LAYERS = [2, 3, 2, 1]
 function EntryOverlay({ onEnter }) {
   return (
     <div id="entry">
-      <h2>Neural Network</h2>
+      <h2>AI Training Chamber</h2>
+      <div className="entry-kicker">AI Training Chamber</div>
 
       <div className="arch" aria-hidden="true">
         {LAYERS.map((count, index) => (
@@ -21,13 +22,13 @@ function EntryOverlay({ onEnter }) {
       </div>
 
       <p>
-        Arquitectura 2 · 3 · 2 · 1
+        Camara inmersiva de entrenamiento
         <br />
-        Arrastra para rotar · Scroll para zoom · Clic en neurona
+        Racks vivos · banco de hardware · prototipos roboticos · nucleo XOR
       </p>
 
       <button id="ebtn" onClick={onEnter}>
-        Entrar
+        Iniciar laboratorio
       </button>
     </div>
   )

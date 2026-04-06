@@ -15,6 +15,16 @@ function cloneBiases(biases) {
   return biases.map((layerBiases) => layerBiases.slice())
 }
 
+function cloneLayers(values) {
+  return values.map((layerValues) => layerValues.slice())
+}
+
+function createZeroWeightUpdates(weights) {
+  return weights.map((layerWeights) =>
+    layerWeights.map((row) => row.map(() => 0)),
+  )
+}
+
 export class NeuralNetworkEngine {
   constructor() {
     this.layers = LAYERS
@@ -70,8 +80,23 @@ export class NeuralNetworkEngine {
     this.lastInput = [0, 0]
 
     this.forwardInput([0, 0])
-    this.saveSnapshot(this.totalLoss(), [0, 0], [0])
+    this.saveSnapshot(this.totalLoss(), [0, 0], [0], this.buildSnapshotMeta([0, 0], [0]))
     this.applySnapshot(this.getCurrentSnapshot())
+  }
+
+  buildSnapshotMeta(input, target, gradients, connectionUpdates, activations) {
+    const zeroGradients = this.layers.map((count) =>
+      Array.from({ length: count }, () => 0),
+    )
+
+    return {
+      input: input.slice(),
+      target: target.slice(),
+      output: (activations ?? this.activations)[this.layers.length - 1].slice(),
+      forward: cloneLayers(activations ?? this.activations),
+      gradients: cloneLayers(gradients ?? zeroGradients),
+      connectionUpdates: cloneWeights(connectionUpdates ?? createZeroWeightUpdates(this.weights)),
+    }
   }
 
   randomWeight() {
@@ -119,11 +144,13 @@ export class NeuralNetworkEngine {
 
   backprop(input, target) {
     this.forwardInput(input)
+    const forwardActivations = cloneLayers(this.activations)
 
     const deltas = this.layers.map((count) =>
       Array.from({ length: count }, () => 0),
     )
     const lastLayerIndex = this.layers.length - 1
+    const connectionUpdates = createZeroWeightUpdates(this.weights)
 
     for (let nodeIndex = 0; nodeIndex < this.layers[lastLayerIndex]; nodeIndex += 1) {
       const output = this.activations[lastLayerIndex][nodeIndex]
@@ -160,10 +187,14 @@ export class NeuralNetworkEngine {
           sourceIndex < this.layers[layerIndex];
           sourceIndex += 1
         ) {
-          this.weights[layerIndex][sourceIndex][nodeIndex] -=
+          const weightShift =
             this.learningRate *
             deltas[layerIndex + 1][nodeIndex] *
             this.activations[layerIndex][sourceIndex]
+
+          connectionUpdates[layerIndex][sourceIndex][nodeIndex] = weightShift
+          this.weights[layerIndex][sourceIndex][nodeIndex] -=
+            weightShift
         }
       }
     }
@@ -176,7 +207,16 @@ export class NeuralNetworkEngine {
         Math.pow(this.activations[lastLayerIndex][nodeIndex] - target[nodeIndex], 2)
     }
 
-    return loss
+    return {
+      loss,
+      meta: this.buildSnapshotMeta(
+        input,
+        target,
+        deltas,
+        connectionUpdates,
+        forwardActivations,
+      ),
+    }
   }
 
   totalLoss() {
@@ -193,7 +233,7 @@ export class NeuralNetworkEngine {
     return loss
   }
 
-  saveSnapshot(loss, input, target) {
+  saveSnapshot(loss, input, target, meta = this.buildSnapshotMeta(input, target)) {
     if (this.historyIndex < this.history.length - 1) {
       this.history = this.history.slice(0, this.historyIndex + 1)
     }
@@ -205,6 +245,7 @@ export class NeuralNetworkEngine {
       step: this.history.length,
       inp: input.slice(),
       tgt: target.slice(),
+      meta,
     })
 
     if (this.history.length > this.maxHistory) {
@@ -227,8 +268,8 @@ export class NeuralNetworkEngine {
   stepForward() {
     const pair = XOR_DATA[this.dataIndex % XOR_DATA.length]
     this.dataIndex += 1
-    this.backprop(pair[0], pair[1])
-    this.saveSnapshot(this.totalLoss(), pair[0], pair[1])
+    const result = this.backprop(pair[0], pair[1])
+    this.saveSnapshot(this.totalLoss(), pair[0], pair[1], result.meta)
     this.applySnapshot(this.getCurrentSnapshot())
     return this.getCurrentSnapshot()
   }
@@ -278,5 +319,34 @@ export class NeuralNetworkEngine {
 
     this.forwardInput(restoreInput)
     return predictions
+  }
+
+  predict(input) {
+    const restoreInput = this.lastInput.slice()
+
+    this.forwardInput(input)
+    const output = this.activations[this.layers.length - 1][0]
+    this.forwardInput(restoreInput)
+
+    return output
+  }
+
+  getDecisionGrid(resolution) {
+    const restoreInput = this.lastInput.slice()
+    const safeResolution = Math.max(4, resolution)
+
+    const grid = Array.from({ length: safeResolution }, (_, rowIndex) => {
+      const y = 1 - rowIndex / (safeResolution - 1)
+
+      return Array.from({ length: safeResolution }, (_, columnIndex) => {
+        const x = columnIndex / (safeResolution - 1)
+
+        this.forwardInput([x, y])
+        return this.activations[this.layers.length - 1][0]
+      })
+    })
+
+    this.forwardInput(restoreInput)
+    return grid
   }
 }
