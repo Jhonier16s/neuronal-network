@@ -1013,11 +1013,15 @@ export class NeuralRoomController {
       new THREE.MeshBasicMaterial({
         map: texture,
         transparent: true,
-        opacity: 0.72,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        depthTest: false,
       }),
     )
-    plane.position.set(px, py, pz - 0.1)
+    plane.position.set(px, py, pz + 0.13)
     plane.rotation.y = ry
+    plane.renderOrder = 1200
     this.environmentGroup.add(plane)
   }
 
