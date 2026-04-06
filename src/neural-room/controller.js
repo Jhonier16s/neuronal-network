@@ -31,6 +31,11 @@ function lerp(start, end, alpha) {
   return start + (end - start) * alpha
 }
 
+function smoothstep01(value) {
+  const clamped = clamp(value, 0, 1)
+  return clamped * clamped * (3 - 2 * clamped)
+}
+
 function blendChannel(start, end, alpha) {
   return Math.round(lerp(start, end, alpha))
 }
@@ -469,6 +474,7 @@ export class NeuralRoomController {
     this.animationFrameId = null
     this.tick = 0
     this.frameCount = 0
+    this.lastFrameTime = 0
     this.phase2d = 0
     this.camX = CAMERA_DEFAULT.x
     this.camY = CAMERA_DEFAULT.y
@@ -477,10 +483,33 @@ export class NeuralRoomController {
     this.pitch = 0
     this.introActive = false
     this.introProgress = 0
-    this.introDuration = 2.8
+    this.introDuration = 8.4
     this.introFrom = new THREE.Vector3(0, 2.4, 18.5)
-    this.introTo = new THREE.Vector3(CAMERA_DEFAULT.x, CAMERA_DEFAULT.y, CAMERA_DEFAULT.z)
-    this.introTarget = new THREE.Vector3(0, 0.2, -1.8)
+    const creditsWallZ = -ROOM_DIMENSIONS.depth / 2 + 0.82
+    this.introTo = new THREE.Vector3(0, 3.2, 13.2)
+    this.introTarget = new THREE.Vector3(0, 3.2, creditsWallZ)
+    this.introCurve = new THREE.CatmullRomCurve3(
+      [
+        new THREE.Vector3(0, 2.4, 18.5),
+        new THREE.Vector3(-15.4, 3.1, 13.2),
+        new THREE.Vector3(-18.7, 3.7, -5.5),
+        new THREE.Vector3(-9.6, 3.2, -16.8),
+        new THREE.Vector3(9.8, 3.3, -16.6),
+        new THREE.Vector3(18.6, 3.5, -2.4),
+        new THREE.Vector3(13.5, 3.1, 13.6),
+        new THREE.Vector3(0.5, 5.8, 10.8),
+        new THREE.Vector3(-8.6, 4.4, 8.1),
+        new THREE.Vector3(-2.8, 6.8, 7.2),
+        new THREE.Vector3(0, 4.8, 10.2),
+        new THREE.Vector3(0, 3.2, 13.2),
+      ],
+      false,
+      'catmullrom',
+      0.18,
+    )
+    this.introCameraPoint = new THREE.Vector3()
+    this.introLookAheadPoint = new THREE.Vector3()
+    this.introLookPoint = new THREE.Vector3()
     this.speed = MOVE_SPEED
     this.raycaster = new THREE.Raycaster()
     this.tempUp = new THREE.Vector3(0, 1, 0)
@@ -2328,9 +2357,11 @@ export class NeuralRoomController {
     this.entryVisible = false
     this.introActive = true
     this.introProgress = 0
-    this.camX = this.introFrom.x
-    this.camY = this.introFrom.y
-    this.camZ = this.introFrom.z
+    this.lastFrameTime = 0
+    this.introCameraPoint.copy(this.introCurve.getPoint(0))
+    this.camX = this.introCameraPoint.x
+    this.camY = this.introCameraPoint.y
+    this.camZ = this.introCameraPoint.z
     this.aimCameraAt(this.introTarget.x, this.introTarget.y, this.introTarget.z)
     this.emitState()
   }
@@ -2597,16 +2628,26 @@ export class NeuralRoomController {
   updateCamera() {
     if (this.introActive) {
       const alpha = clamp(this.introProgress / this.introDuration, 0, 1)
-      const eased = alpha * alpha * (3 - 2 * alpha)
+      const eased = smoothstep01(alpha)
 
-      this.camX = lerp(this.introFrom.x, this.introTo.x, eased)
-      this.camY = lerp(this.introFrom.y, this.introTo.y, eased)
-      this.camZ = lerp(this.introFrom.z, this.introTo.z, eased)
-      this.camera.position.set(this.camX, this.camY, this.camZ)
-      this.camera.lookAt(this.introTarget)
+      this.introCameraPoint.copy(this.introCurve.getPoint(eased))
+      this.camX = this.introCameraPoint.x
+      this.camY = this.introCameraPoint.y
+      this.camZ = this.introCameraPoint.z
+
+      this.introLookAheadPoint.copy(this.introCurve.getPoint(clamp(eased + 0.042, 0, 1)))
+      const settle = smoothstep01((eased - 0.72) / 0.28)
+      this.introLookPoint.copy(this.introLookAheadPoint).lerp(this.introTarget, settle)
+
+      this.camera.position.copy(this.introCameraPoint)
+      this.camera.lookAt(this.introLookPoint)
 
       if (alpha >= 1) {
         this.introActive = false
+        this.camX = this.introTo.x
+        this.camY = this.introTo.y
+        this.camZ = this.introTo.z
+        this.camera.position.set(this.camX, this.camY, this.camZ)
         this.aimCameraAt(this.introTarget.x, this.introTarget.y, this.introTarget.z)
         this.emitState()
       }
@@ -2932,13 +2973,20 @@ export class NeuralRoomController {
 
   }
 
-  animate() {
+  animate(now = performance.now()) {
     this.animationFrameId = requestAnimationFrame(this.animate)
-    this.tick += 0.012
+    if (!this.lastFrameTime) {
+      this.lastFrameTime = now
+    }
+
+    const delta = clamp((now - this.lastFrameTime) / 1000, 1 / 240, 0.05)
+    this.lastFrameTime = now
+
+    this.tick += delta * 0.72
     this.frameCount += 1
 
     if (this.introActive) {
-      this.introProgress += 0.016
+      this.introProgress += delta
     }
 
     this.applyMovement()
