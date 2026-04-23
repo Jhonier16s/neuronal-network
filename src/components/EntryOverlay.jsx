@@ -22,13 +22,13 @@ function EntryOverlay({ onEnter }) {
       </div>
 
       <p>
-        Camara inmersiva de entrenamiento
+        Room tour cinematografico y exploracion libre
         <br />
         Racks vivos · banco de hardware · prototipos roboticos · nucleo XOR
       </p>
 
       <button id="ebtn" onClick={onEnter}>
-        Iniciar laboratorio
+        Iniciar room tour
       </button>
     </div>
   )

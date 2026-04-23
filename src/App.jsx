@@ -59,13 +59,16 @@ function App() {
 
       <TrainingPanel
         training={viewState.training}
+        cinematicActive={viewState.cinematicActive}
         onStepBack={() => controller?.stepBack()}
         onStepForward={() => controller?.stepForward()}
       />
 
-      <div id="arrow-hint">
-        <b>&larr; &rarr;</b> navegar pasos · <b>ESPACIO</b> auto-entrenar
-      </div>
+      {viewState.cinematicActive ? null : (
+        <div id="arrow-hint">
+          <b>&larr; &rarr;</b> navegar pasos · <b>ESPACIO</b> auto-entrenar
+        </div>
+      )}
 
       {viewState.entryVisible ? (
         <EntryOverlay onEnter={() => controller?.enterScene()} />

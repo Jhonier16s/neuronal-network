@@ -36,10 +36,6 @@ function smoothstep01(value) {
   return clamped * clamped * (3 - 2 * clamped)
 }
 
-function blendChannel(start, end, alpha) {
-  return Math.round(lerp(start, end, alpha))
-}
-
 function getWeightColor3(weight) {
   if (weight > 0.1) {
     return new THREE.Color(COLORS.positive)
@@ -62,31 +58,6 @@ function getWeightColorCss(weight) {
   }
 
   return '#507888'
-}
-
-function getDecisionSurfaceColor(value) {
-  const low = [16, 38, 52]
-  const mid = [27, 127, 157]
-  const high = [142, 240, 255]
-  const edge = [255, 216, 156]
-
-  if (value < 0.5) {
-    const alpha = value / 0.5
-
-    return `rgb(${blendChannel(low[0], mid[0], alpha)}, ${blendChannel(
-      low[1],
-      mid[1],
-      alpha,
-    )}, ${blendChannel(low[2], mid[2], alpha)})`
-  }
-
-  const alpha = (value - 0.5) / 0.5
-
-  return `rgb(${blendChannel(high[0], edge[0], alpha)}, ${blendChannel(
-    high[1],
-    edge[1],
-    alpha,
-  )}, ${blendChannel(high[2], edge[2], alpha)})`
 }
 
 function getActivationTone(value) {
@@ -481,40 +452,20 @@ export class NeuralRoomController {
     this.camZ = CAMERA_DEFAULT.z
     this.yaw = 0
     this.pitch = 0
-    this.introActive = false
-    this.introProgress = 0
-    this.introDuration = 8.4
-    this.introFrom = new THREE.Vector3(0, 2.4, 18.5)
-    const creditsWallZ = -ROOM_DIMENSIONS.depth / 2 + 0.82
-    this.introTo = new THREE.Vector3(0, 3.2, 13.2)
-    this.introTarget = new THREE.Vector3(0, 3.2, creditsWallZ)
-    this.introCurve = new THREE.CatmullRomCurve3(
-      [
-        new THREE.Vector3(0, 2.4, 18.5),
-        new THREE.Vector3(-15.4, 3.1, 13.2),
-        new THREE.Vector3(-18.7, 3.7, -5.5),
-        new THREE.Vector3(-9.6, 3.2, -16.8),
-        new THREE.Vector3(9.8, 3.3, -16.6),
-        new THREE.Vector3(18.6, 3.5, -2.4),
-        new THREE.Vector3(13.5, 3.1, 13.6),
-        new THREE.Vector3(0.5, 5.8, 10.8),
-        new THREE.Vector3(-8.6, 4.4, 8.1),
-        new THREE.Vector3(-2.8, 6.8, 7.2),
-        new THREE.Vector3(0, 4.8, 10.2),
-        new THREE.Vector3(0, 3.2, 13.2),
-      ],
-      false,
-      'catmullrom',
-      0.18,
-    )
-    this.introCameraPoint = new THREE.Vector3()
-    this.introLookAheadPoint = new THREE.Vector3()
-    this.introLookPoint = new THREE.Vector3()
+    this.tourActive = false
+    this.tourShotIndex = 0
+    this.tourShotTime = 0
+    this.tourLabel = ''
+    this.tourShots = []
+    this.tourAnchors = new Map()
+    this.tourCameraPoint = new THREE.Vector3()
+    this.tourLookPoint = new THREE.Vector3()
     this.speed = MOVE_SPEED
     this.raycaster = new THREE.Raycaster()
     this.tempUp = new THREE.Vector3(0, 1, 0)
     this.tempQuaternion = new THREE.Quaternion()
     this.tempTangent = new THREE.Vector3()
+    this.sharedPulseGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1)
     this.forwardSignalColor = new THREE.Color(COLORS.forward)
     this.backwardSignalColor = new THREE.Color(COLORS.backward)
     this.trainingCueText = 'Flujo forward + correccion + nucleo XOR'
@@ -560,6 +511,8 @@ export class NeuralRoomController {
 
   createScene() {
     this.viewportEl.innerHTML = ''
+    this.tourAnchors.clear()
+    this.tourShots = []
 
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(COLORS.background)
@@ -575,7 +528,7 @@ export class NeuralRoomController {
     this.camera.lookAt(0, 0, 0)
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -592,6 +545,13 @@ export class NeuralRoomController {
     this.networkGroup = new THREE.Group()
     this.scene.add(this.networkGroup)
     this.buildNetworkObjects()
+    this.registerTourAnchor('entryWide', CAMERA_ENTRY.x, CAMERA_ENTRY.y + 0.4, CAMERA_ENTRY.z + 1.5)
+    this.registerTourAnchor('entrySettle', 0, 3.2, 13.4)
+    this.registerTourAnchor('entryFocus', 0, 1.5, 4.4)
+    this.registerTourAnchor('networkWide', 8.8, 4.3, 12.8)
+    this.registerTourAnchor('networkFree', CAMERA_DEFAULT.x, CAMERA_DEFAULT.y, CAMERA_DEFAULT.z)
+    this.registerTourAnchor('networkFocus', 0, 1.3, 0)
+    this.buildTourShots()
     this.updateDecisionSurface()
   }
 
@@ -857,7 +817,7 @@ export class NeuralRoomController {
     this.createBox(0.22, 0.12, 14.8, materials.trim, 0, height / 2 - 1.7, 0)
   }
 
-  createWallConsoles(materials, width, depth) {
+  createWallConsoles(materials, width) {
     const leftX = -width / 2 + 0.9
     const rightX = width / 2 - 0.9
 
@@ -867,7 +827,7 @@ export class NeuralRoomController {
     })
   }
 
-  createWallLightPanels(materials, width, height, depth) {
+  createWallLightPanels(materials, width, height) {
     const topY = height / 2 - 4.4
     const sideX = width / 2 - 0.28
 
@@ -877,7 +837,7 @@ export class NeuralRoomController {
     })
   }
 
-  createWallShelves(materials, width, depth) {
+  createWallShelves(materials, width) {
     const leftX = -width / 2 + 1.15
     const rightX = width / 2 - 1.15
 
@@ -1008,6 +968,10 @@ export class NeuralRoomController {
   }
 
   createCreditsPanel(px, py, pz, ry) {
+    this.registerTourAnchor('creditsWide', 0, 4.2, -16.8)
+    this.registerTourAnchor('creditsClose', 0, 7.2, -14.4)
+    this.registerTourAnchor('creditsFocus', 0, 7.9, pz)
+
     const texture = buildCreditsTexture(['Jhonier Becerra', 'Jorge Chicaiza'])
     texture.colorSpace = THREE.SRGBColorSpace
 
@@ -1311,6 +1275,11 @@ export class NeuralRoomController {
   createServerAisle(materials, width) {
     const leftX = -width / 2 + 3.6
 
+    this.registerTourAnchor('rackWide', -11.8, 2.9, -14.2)
+    this.registerTourAnchor('rackClose', -17.1, 1.8, -4.6)
+    this.registerTourAnchor('rackFocus', leftX - 0.6, -7.9, -2.2)
+    this.registerTourAnchor('rackDetail', leftX + 0.8, -8.9, -4)
+
     ;[-11, -4, 3, 10].forEach((z, rackIndex) => {
       this.createServerRack(leftX, -11.1, z, Math.PI / 2, materials, `TRAIN-${rackIndex + 1}`)
     })
@@ -1375,6 +1344,11 @@ export class NeuralRoomController {
     const x = width / 2 - 7.2
     const z = depth / 2 - 9.2
 
+    this.registerTourAnchor('workbenchWide', 9.8, 2.6, 14.9)
+    this.registerTourAnchor('workbenchClose', 14.5, -9.1, 12.2)
+    this.registerTourAnchor('workbenchFocus', x, -11.4, z)
+    this.registerTourAnchor('workbenchDetail', x - 0.9, -11.2, z - 0.2)
+
     this.createBox(6.4, 0.28, 3.2, materials.panel, x, -12.5, z)
     this.createBox(0.24, 3.2, 0.24, materials.trim, x - 2.8, -13.4, z - 1.2)
     this.createBox(0.24, 3.2, 0.24, materials.trim, x + 2.8, -13.4, z - 1.2)
@@ -1437,7 +1411,7 @@ export class NeuralRoomController {
     }
   }
 
-  createCoffeeCup(px, py, pz, materials) {
+  createCoffeeCup(px, py, pz) {
     const cup = new THREE.Mesh(
       new THREE.CylinderGeometry(0.22, 0.18, 0.42, 20),
       new THREE.MeshStandardMaterial({
@@ -1512,6 +1486,11 @@ export class NeuralRoomController {
   createPrototypeBay(materials, width, depth) {
     const x = width / 2 - 5.2
     const z = -depth / 2 + 6.2
+
+    this.registerTourAnchor('robotBayWide', 12.6, 1.9, -16.4)
+    this.registerTourAnchor('robotBayClose', 16.8, -9.2, -13.1)
+    this.registerTourAnchor('robotBayFocus', x, -10.3, z)
+    this.registerTourAnchor('robotBayDetail', x + 2.2, -7.1, z)
 
     this.createBox(7.2, 0.28, 1.6, materials.panel, x, -13.6, z)
     this.createBox(7.2, 0.28, 1.6, materials.panel, x, -10.8, z)
@@ -1766,6 +1745,173 @@ export class NeuralRoomController {
     this.environmentGroup.add(mesh)
   }
 
+  registerTourAnchor(id, x, y, z) {
+    this.tourAnchors.set(id, new THREE.Vector3(x, y, z))
+  }
+
+  getTourAnchor(id) {
+    return this.tourAnchors.get(id)?.clone() ?? new THREE.Vector3()
+  }
+
+  buildTourShots() {
+    this.tourShots = [
+      {
+        id: 'entry',
+        from: 'entryWide',
+        to: 'entrySettle',
+        lookFrom: 'entryFocus',
+        lookTo: 'entryFocus',
+        duration: 2.8,
+        label: 'Ingreso al laboratorio',
+        fovFrom: 60,
+        fovTo: 58,
+      },
+      {
+        id: 'robots',
+        from: 'robotBayWide',
+        to: 'robotBayClose',
+        lookFrom: 'robotBayFocus',
+        lookTo: 'robotBayDetail',
+        duration: 3.2,
+        label: 'Prototipos roboticos y bots de piso',
+        fovFrom: 57,
+        fovTo: 51,
+      },
+      {
+        id: 'racks',
+        from: 'rackWide',
+        to: 'rackClose',
+        lookFrom: 'rackFocus',
+        lookTo: 'rackDetail',
+        duration: 3,
+        label: 'Racks y consolas de entrenamiento',
+        fovFrom: 56,
+        fovTo: 50,
+      },
+      {
+        id: 'workbench',
+        from: 'workbenchWide',
+        to: 'workbenchClose',
+        lookFrom: 'workbenchFocus',
+        lookTo: 'workbenchDetail',
+        duration: 3,
+        label: 'PC, monitores y banco de trabajo',
+        fovFrom: 56,
+        fovTo: 49,
+      },
+      {
+        id: 'credits',
+        from: 'creditsWide',
+        to: 'creditsClose',
+        lookFrom: 'creditsFocus',
+        lookTo: 'creditsFocus',
+        duration: 2.7,
+        label: 'Integrantes del proyecto',
+        fovFrom: 54,
+        fovTo: 47,
+      },
+      {
+        id: 'network',
+        from: 'networkWide',
+        to: 'networkFree',
+        lookFrom: 'networkFocus',
+        lookTo: 'networkFocus',
+        duration: 3.6,
+        label: 'Red neuronal lista para explorar',
+        fovFrom: 57,
+        fovTo: 60,
+      },
+    ]
+  }
+
+  applyTourShot(shot, progress) {
+    const eased = smoothstep01(progress)
+    const from = this.getTourAnchor(shot.from)
+    const to = this.getTourAnchor(shot.to)
+    const lookFrom = this.getTourAnchor(shot.lookFrom)
+    const lookTo = this.getTourAnchor(shot.lookTo)
+
+    this.tourCameraPoint.lerpVectors(from, to, eased)
+    this.tourLookPoint.lerpVectors(lookFrom, lookTo, eased)
+
+    this.camX = this.tourCameraPoint.x
+    this.camY = this.tourCameraPoint.y
+    this.camZ = this.tourCameraPoint.z
+    this.camera.position.copy(this.tourCameraPoint)
+    this.camera.fov = lerp(shot.fovFrom ?? 60, shot.fovTo ?? 60, eased)
+    this.camera.updateProjectionMatrix()
+    this.camera.lookAt(this.tourLookPoint)
+  }
+
+  startGuidedTour() {
+    if (!this.camera || this.tourShots.length === 0) {
+      return
+    }
+
+    if (document.pointerLockElement === this.renderer?.domElement) {
+      document.exitPointerLock?.()
+    }
+
+    this.entryVisible = false
+    this.pointerLocked = false
+    this.tourActive = true
+    this.tourShotIndex = 0
+    this.tourShotTime = 0
+    this.tourLabel = this.tourShots[0].label
+    this.lastFrameTime = 0
+    this.clearSelection()
+    this.trainingCueText = 'Recorrido guiado por el laboratorio'
+    this.applyTourShot(this.tourShots[0], 0)
+    this.emitState()
+  }
+
+  finishGuidedTour() {
+    const finalShot = this.tourShots[this.tourShots.length - 1]
+
+    if (finalShot) {
+      this.applyTourShot(finalShot, 1)
+      this.aimCameraAt(this.tourLookPoint.x, this.tourLookPoint.y, this.tourLookPoint.z)
+    }
+
+    this.tourActive = false
+    this.tourShotIndex = 0
+    this.tourShotTime = 0
+    this.tourLabel = ''
+    this.trainingCueText = 'Flujo forward + correccion + nucleo XOR'
+    this.emitState()
+  }
+
+  advanceGuidedTour(delta) {
+    if (!this.tourActive) {
+      return
+    }
+
+    const shot = this.tourShots[this.tourShotIndex]
+
+    if (!shot) {
+      this.finishGuidedTour()
+      return
+    }
+
+    this.tourShotTime = Math.min(this.tourShotTime + delta, shot.duration)
+    const progress = shot.duration > 0 ? this.tourShotTime / shot.duration : 1
+    this.applyTourShot(shot, progress)
+
+    if (progress < 1) {
+      return
+    }
+
+    if (this.tourShotIndex >= this.tourShots.length - 1) {
+      this.finishGuidedTour()
+      return
+    }
+
+    this.tourShotIndex += 1
+    this.tourShotTime = 0
+    this.tourLabel = this.tourShots[this.tourShotIndex].label
+    this.emitState()
+  }
+
   getNeuronPosition(layerIndex, neuronIndex) {
     return new THREE.Vector3(
       layerIndex * LAYER_SPACING - ((LAYERS.length - 1) * LAYER_SPACING) / 2,
@@ -1856,13 +2002,12 @@ export class NeuralRoomController {
       const radius = 0.025 + absoluteWeight * 0.13
 
       for (let dashIndex = 0; dashIndex < DASH_COUNT; dashIndex += 1) {
-        const geometry = new THREE.CylinderGeometry(radius, radius, 0.5, 6, 1)
         const material = new THREE.MeshBasicMaterial({
           color: getWeightColor3(connection.weight),
           transparent: true,
           opacity: 0,
         })
-        const mesh = new THREE.Mesh(geometry, material)
+        const mesh = new THREE.Mesh(this.sharedPulseGeometry, material)
 
         this.networkGroup.add(mesh)
         connection.pulses.push({
@@ -2231,7 +2376,7 @@ export class NeuralRoomController {
   }
 
   handleKeyDown(event) {
-    if (this.introActive) {
+    if (this.tourActive) {
       return
     }
 
@@ -2265,7 +2410,7 @@ export class NeuralRoomController {
   }
 
   handleCanvasClick() {
-    if (!this.renderer || this.introActive) {
+    if (!this.renderer || this.tourActive) {
       return
     }
 
@@ -2286,7 +2431,7 @@ export class NeuralRoomController {
   }
 
   handleMouseMove(event) {
-    if (!this.pointerLocked || this.introActive) {
+    if (!this.pointerLocked || this.tourActive) {
       return
     }
 
@@ -2296,7 +2441,7 @@ export class NeuralRoomController {
   }
 
   handleWheel(event) {
-    if (this.introActive) {
+    if (this.tourActive) {
       return
     }
 
@@ -2310,7 +2455,7 @@ export class NeuralRoomController {
   }
 
   applyMovement() {
-    if (this.introActive) {
+    if (this.tourActive) {
       return
     }
 
@@ -2354,25 +2499,24 @@ export class NeuralRoomController {
   }
 
   enterScene() {
-    this.entryVisible = false
-    this.introActive = true
-    this.introProgress = 0
-    this.lastFrameTime = 0
-    this.introCameraPoint.copy(this.introCurve.getPoint(0))
-    this.camX = this.introCameraPoint.x
-    this.camY = this.introCameraPoint.y
-    this.camZ = this.introCameraPoint.z
-    this.aimCameraAt(this.introTarget.x, this.introTarget.y, this.introTarget.z)
-    this.emitState()
+    this.startGuidedTour()
   }
 
   toggleAutoTrain() {
+    if (this.tourActive) {
+      return
+    }
+
     this.autoTrain = !this.autoTrain
     this.statusMode = this.autoTrain ? 'auto' : 'paused'
     this.emitState()
   }
 
   stepForward() {
+    if (this.tourActive) {
+      return
+    }
+
     const snapshot = this.engine.stepForward()
     this.syncStatusMode()
     this.applyCurrentModelToScene()
@@ -2381,6 +2525,10 @@ export class NeuralRoomController {
   }
 
   stepBack() {
+    if (this.tourActive) {
+      return
+    }
+
     const snapshot = this.engine.stepBack()
     this.syncStatusMode()
     this.applyCurrentModelToScene()
@@ -2389,6 +2537,10 @@ export class NeuralRoomController {
   }
 
   stepForwardNav() {
+    if (this.tourActive) {
+      return
+    }
+
     const snapshot = this.engine.stepForwardNav()
     this.syncStatusMode()
     this.applyCurrentModelToScene()
@@ -2450,7 +2602,6 @@ export class NeuralRoomController {
           const weight = this.engine.weights[layerIndex][fromIndex][toIndex]
           const absoluteWeight = Math.abs(weight)
           const color = getWeightColor3(weight)
-          const baseRadius = 0.012 + absoluteWeight * 0.1
           const pulseRadius = 0.025 + absoluteWeight * 0.13
 
           connection.weight = weight
@@ -2458,16 +2609,6 @@ export class NeuralRoomController {
           connection.base.baseOpacity = 0.18 + absoluteWeight * 0.28
           connection.base.material.color.copy(color)
           connection.base.material.opacity = connection.base.baseOpacity
-          connection.base.geometry.dispose()
-          connection.base.geometry = new THREE.TubeGeometry(
-            connection.curve,
-            48,
-            baseRadius,
-            5,
-            false,
-          )
-          connection.base.mesh.geometry = connection.base.geometry
-          connection.base.radius = baseRadius
 
           connection.pulses.forEach((pulse) => {
             pulse.radius = pulseRadius
@@ -2587,9 +2728,9 @@ export class NeuralRoomController {
       entryVisible: this.entryVisible,
       mode3D: true,
       pointerLocked: this.pointerLocked,
-      cinematicActive: this.introActive,
-      mouseLabel: this.introActive
-        ? 'Presentacion automatica del laboratorio'
+      cinematicActive: this.tourActive,
+      mouseLabel: this.tourActive
+        ? 'Room tour automatico en curso'
         : 'Clic para explorar · WASD · ESC para soltar',
       infoVisible: Boolean(this.selectedNeuron),
       selectedNeuron: this.buildSelectedNeuronData(),
@@ -2610,7 +2751,7 @@ export class NeuralRoomController {
           ? `${this.engine.historyIndex + 1} / ${this.engine.history.length}`
           : '0 / 0',
         sampleText: snapshot ? formatXorLabel(snapshot.inp, snapshot.tgt) : '—',
-        visualText: this.introActive ? 'Reveal cinematico del laboratorio' : this.trainingCueText,
+        visualText: this.tourActive ? this.tourLabel : this.trainingCueText,
         outputs: outputs.length > 0 ? outputs : createPlaceholderOutputs(),
         losses:
           this.engine.history.length > 0
@@ -2625,33 +2766,9 @@ export class NeuralRoomController {
     this.onStateChange?.(this.buildViewState())
   }
 
-  updateCamera() {
-    if (this.introActive) {
-      const alpha = clamp(this.introProgress / this.introDuration, 0, 1)
-      const eased = smoothstep01(alpha)
-
-      this.introCameraPoint.copy(this.introCurve.getPoint(eased))
-      this.camX = this.introCameraPoint.x
-      this.camY = this.introCameraPoint.y
-      this.camZ = this.introCameraPoint.z
-
-      this.introLookAheadPoint.copy(this.introCurve.getPoint(clamp(eased + 0.042, 0, 1)))
-      const settle = smoothstep01((eased - 0.72) / 0.28)
-      this.introLookPoint.copy(this.introLookAheadPoint).lerp(this.introTarget, settle)
-
-      this.camera.position.copy(this.introCameraPoint)
-      this.camera.lookAt(this.introLookPoint)
-
-      if (alpha >= 1) {
-        this.introActive = false
-        this.camX = this.introTo.x
-        this.camY = this.introTo.y
-        this.camZ = this.introTo.z
-        this.camera.position.set(this.camX, this.camY, this.camZ)
-        this.aimCameraAt(this.introTarget.x, this.introTarget.y, this.introTarget.z)
-        this.emitState()
-      }
-
+  updateCamera(delta) {
+    if (this.tourActive) {
+      this.advanceGuidedTour(delta)
       return
     }
 
@@ -2750,19 +2867,8 @@ export class NeuralRoomController {
         pulse.mesh.quaternion.copy(this.tempQuaternion)
 
         const segmentLength = positionA.distanceTo(positionB)
-        pulse.mesh.scale.set(1, segmentLength / 0.5, 1)
+        pulse.mesh.scale.set(pulse.radius, segmentLength, pulse.radius)
         pulse.material.opacity = (0.65 + absoluteWeight * 0.3) * Math.sin(pulse.t * Math.PI)
-
-        if (pulse.mesh.geometry.parameters.radiusTop !== pulse.radius) {
-          pulse.mesh.geometry.dispose()
-          pulse.mesh.geometry = new THREE.CylinderGeometry(
-            pulse.radius,
-            pulse.radius,
-            0.5,
-            6,
-            1,
-          )
-        }
       })
     })
   }
@@ -2959,7 +3065,9 @@ export class NeuralRoomController {
       this.heroSpotlight.angle = 0.4 + Math.sin(this.tick * 0.25) * 0.02
     }
 
-    if (this.frameCount % 6 === 0) {
+    const panelRefreshInterval = this.tourActive ? 10 : 6
+
+    if (this.frameCount % panelRefreshInterval === 0) {
       this.displayPanels.forEach((panel, index) => {
         renderDisplayPanelTexture(panel, {
           tick: this.tick + index * 0.45,
@@ -2985,12 +3093,8 @@ export class NeuralRoomController {
     this.tick += delta * 0.72
     this.frameCount += 1
 
-    if (this.introActive) {
-      this.introProgress += delta
-    }
-
     this.applyMovement()
-    this.updateCamera()
+    this.updateCamera(delta)
     this.animateNodes()
     this.animatePulses()
     this.animateConnectionBases()
@@ -2999,7 +3103,8 @@ export class NeuralRoomController {
     this.animateLabEnvironment()
 
     if (this.bloomPass) {
-      const targetStrength = 0.24 + Math.min(0.12, this.trainingBursts.length * 0.006)
+      const tourBloomCap = this.tourActive ? 0.07 : 0.12
+      const targetStrength = 0.2 + Math.min(tourBloomCap, this.trainingBursts.length * 0.006)
       this.bloomPass.strength = lerp(this.bloomPass.strength, targetStrength, 0.08)
     }
 
@@ -3049,6 +3154,8 @@ export class NeuralRoomController {
 
     this.renderer?.dispose?.()
     this.composer?.dispose?.()
+    this.sharedPulseGeometry?.dispose?.()
+    this.sharedPulseGeometry = null
 
     if (this.renderer?.domElement?.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement)

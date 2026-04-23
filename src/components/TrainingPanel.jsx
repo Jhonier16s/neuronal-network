@@ -1,6 +1,6 @@
 import LossChart from './LossChart.jsx'
 
-function TrainingPanel({ training, onStepBack, onStepForward }) {
+function TrainingPanel({ training, onStepBack, onStepForward, cinematicActive }) {
   return (
     <div id="train-panel">
       <h3>Entrenamiento XOR</h3>
@@ -57,11 +57,11 @@ function TrainingPanel({ training, onStepBack, onStepForward }) {
       </div>
 
       <div id="step-controls">
-        <button className="step-btn" onClick={onStepBack}>
+        <button className="step-btn" onClick={onStepBack} disabled={cinematicActive}>
           &larr; Atras
         </button>
         <span id="step-pos">{training.stepPosition}</span>
-        <button className="step-btn primary" onClick={onStepForward}>
+        <button className="step-btn primary" onClick={onStepForward} disabled={cinematicActive}>
           &rarr; Siguiente
         </button>
       </div>
