@@ -652,8 +652,8 @@ export class NeuralRoomController {
     this.createWallLightPanels(materials, width, height, depth)
     this.createWallShelves(materials, width, depth)
     this.createWallDecorClusters(materials, width, depth)
+    this.createAmbientWallInstallations(materials, width, height, depth)
     this.createHeroWall(materials, width, height, depth)
-    this.createResearchPanels(width, depth)
     this.createServerAisle(materials, width)
     this.createWorkbenchZone(materials, width, depth)
     this.createPrototypeBay(materials, width, depth)
@@ -971,10 +971,78 @@ export class NeuralRoomController {
     this.environmentGroup.add(plane)
   }
 
+  createAmbientWallInstallations(materials, width, height, depth) {
+    const sideX = width / 2 - 0.34
+    const backZ = -depth / 2 + 0.34
+
+    this.createWallInstallation(-sideX, 4.9, -9.5, Math.PI / 2, 6.8, 2.9, '#8ef0ff', materials)
+    this.createWallInstallation(-sideX, 4.9, 9.5, Math.PI / 2, 6.8, 2.9, '#ffd38a', materials)
+    this.createWallInstallation(sideX, 4.9, -9.5, -Math.PI / 2, 6.8, 2.9, '#8ef0ff', materials)
+    this.createWallInstallation(sideX, 4.9, 9.5, -Math.PI / 2, 6.8, 2.9, '#7af0b2', materials)
+
+    this.createWallInstallation(-9.4, 5.1, backZ, 0, 5.2, 2.4, '#8ef0ff', materials)
+    this.createWallInstallation(9.4, 5.1, backZ, 0, 5.2, 2.4, '#ffbe76', materials)
+
+    this.createEmissiveStrip(12.5, 0.1, 0.08, 0, height / 2 - 2.2, backZ + 0.08, 0, 0, 0, COLORS.roomAccent, 0.14, 0.04)
+    this.createEmissiveStrip(0.08, 7.4, 0.08, -width / 2 + 1.1, 1.2, 0, 0, 0, 0, COLORS.forward, 0.11, 0.04)
+    this.createEmissiveStrip(0.08, 7.4, 0.08, width / 2 - 1.1, 1.2, 0, 0, 0, 0, COLORS.hologramEdge, 0.11, 0.04)
+  }
+
+  createWallInstallation(px, py, pz, ry, width, height, accent, materials) {
+    const normal = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), ry)
+    const tangent = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), ry)
+    const frontInset = new THREE.Vector3().copy(normal).multiplyScalar(0.08)
+    const frontAccent = new THREE.Vector3().copy(normal).multiplyScalar(0.15)
+
+    this.createBox(width + 0.5, height + 0.5, 0.16, materials.trim, px, py, pz, 0, ry, 0)
+    this.createBox(width + 0.14, height + 0.14, 0.08, materials.panel, px + frontInset.x, py, pz + frontInset.z, 0, ry, 0)
+    this.createBox(width * 0.74, 0.08, 0.08, materials.detail, px + frontAccent.x, py + height * 0.3, pz + frontAccent.z, 0, ry, 0)
+    this.createBox(width * 0.54, 0.08, 0.08, materials.detail, px + frontAccent.x, py, pz + frontAccent.z, 0, ry, 0)
+    this.createBox(width * 0.32, 0.08, 0.08, materials.detail, px + frontAccent.x, py - height * 0.3, pz + frontAccent.z, 0, ry, 0)
+
+    this.createEmissiveStrip(width * 0.8, 0.05, 0.05, px + frontAccent.x, py + height / 2 + 0.12, pz + frontAccent.z, 0, ry, 0, accent, 0.14, 0.05)
+    this.createEmissiveStrip(0.05, height * 0.76, 0.05, px - tangent.x * (width / 2 - 0.28) + frontAccent.x, py, pz - tangent.z * (width / 2 - 0.28) + frontAccent.z, 0, ry, 0, accent, 0.1, 0.03)
+    this.createEmissiveStrip(0.05, height * 0.76, 0.05, px + tangent.x * (width / 2 - 0.28) + frontAccent.x, py, pz + tangent.z * (width / 2 - 0.28) + frontAccent.z, 0, ry, 0, accent, 0.1, 0.03)
+  }
+
   createCreditsPanel(px, py, pz, ry) {
     this.registerTourAnchor('creditsWide', 0, 4.2, -16.8)
     this.registerTourAnchor('creditsClose', 0, 7.2, -14.4)
     this.registerTourAnchor('creditsFocus', 0, 7.9, pz)
+
+    this.createBox(13.2, 5.2, 0.24, new THREE.MeshStandardMaterial({
+      color: 0x10202a,
+      emissive: COLORS.roomAccent,
+      emissiveIntensity: 0.04,
+      roughness: 0.42,
+      metalness: 0.38,
+    }), px, py, pz - 0.08, 0, ry, 0)
+    this.createBox(14.2, 0.24, 0.34, new THREE.MeshStandardMaterial({
+      color: 0x213846,
+      roughness: 0.28,
+      metalness: 0.72,
+    }), px, py + 2.72, pz - 0.02, 0, ry, 0)
+    this.createBox(14.2, 0.24, 0.34, new THREE.MeshStandardMaterial({
+      color: 0x213846,
+      roughness: 0.28,
+      metalness: 0.72,
+    }), px, py - 2.72, pz - 0.02, 0, ry, 0)
+    this.createBox(0.24, 5.2, 0.34, new THREE.MeshStandardMaterial({
+      color: 0x213846,
+      roughness: 0.28,
+      metalness: 0.72,
+    }), px - 7.02, py, pz - 0.02, 0, ry, 0)
+    this.createBox(0.24, 5.2, 0.34, new THREE.MeshStandardMaterial({
+      color: 0x213846,
+      roughness: 0.28,
+      metalness: 0.72,
+    }), px + 7.02, py, pz - 0.02, 0, ry, 0)
+
+    this.createEmissiveStrip(11.6, 0.08, 0.08, px, py + 2.18, pz + 0.12, 0, ry, 0, COLORS.roomAccent, 0.18, 0.06)
+    this.createEmissiveStrip(11.6, 0.08, 0.08, px, py - 2.18, pz + 0.12, 0, ry, 0, COLORS.hologramEdge, 0.14, 0.05)
+    this.createEmissiveStrip(0.08, 3.6, 0.08, px - 5.6, py, pz + 0.12, 0, ry, 0, COLORS.forward, 0.12, 0.04)
+    this.createEmissiveStrip(0.08, 3.6, 0.08, px + 5.6, py, pz + 0.12, 0, ry, 0, COLORS.forward, 0.12, 0.04)
+    this.addLabLight(new THREE.Vector3(px, py + 0.9, pz + 1.2), COLORS.roomAccent, 0.24, 0.08, 8)
 
     const texture = buildCreditsTexture(['Jhonier Becerra', 'Jorge Chicaiza'])
     texture.colorSpace = THREE.SRGBColorSpace
@@ -1331,53 +1399,73 @@ export class NeuralRoomController {
       this.environmentGroup.add(fan)
       this.labFans.push({ mesh: fan, speed: 0.22 + index * 0.05 })
     })
-
-    const texture = buildResearchPanelTexture(label, 'GPU cluster', ['1024 tensor ops', 'Thermal stable', 'Data stream active'], '#8ef0ff')
-    texture.colorSpace = THREE.SRGBColorSpace
-
-    const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.8, 1),
-      new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.95 }),
-    )
-    screen.position.set(px + 1.12, py + 2.8, pz)
-    screen.rotation.y = ry
-    this.environmentGroup.add(screen)
   }
 
   createWorkbenchZone(materials, width, depth) {
     const x = width / 2 - 7.2
     const z = depth / 2 - 9.2
+    const lift = 2.25
 
     this.registerTourAnchor('workbenchWide', 9.8, 2.6, 14.9)
     this.registerTourAnchor('workbenchClose', 14.5, -9.1, 12.2)
-    this.registerTourAnchor('workbenchFocus', x, -11.4, z)
-    this.registerTourAnchor('workbenchDetail', x - 0.9, -11.2, z - 0.2)
+    this.registerTourAnchor('workbenchFocus', x, -11.4 + lift, z)
+    this.registerTourAnchor('workbenchDetail', x - 0.9, -11.2 + lift, z - 0.2)
 
-    this.createBox(6.4, 0.28, 3.2, materials.panel, x, -12.5, z)
-    this.createBox(0.24, 3.2, 0.24, materials.trim, x - 2.8, -13.4, z - 1.2)
-    this.createBox(0.24, 3.2, 0.24, materials.trim, x + 2.8, -13.4, z - 1.2)
-    this.createBox(0.24, 3.2, 0.24, materials.trim, x - 2.8, -13.4, z + 1.2)
-    this.createBox(0.24, 3.2, 0.24, materials.trim, x + 2.8, -13.4, z + 1.2)
+    this.createBox(6.9, 0.2, 3.45, materials.trim, x, -12.72 + lift, z)
+    this.createBox(6.4, 0.36, 3.2, materials.panel, x, -12.43 + lift, z)
+    this.createBox(6.2, 0.2, 0.22, materials.detail, x, -12.16 + lift, z + 1.34)
+    this.createBox(1.2, 2.5, 2.8, materials.console, x - 2.42, -13.05 + lift, z)
+    this.createBox(0.18, 2.82, 0.18, materials.trim, x + 2.88, -13.24 + lift, z - 1.24)
+    this.createBox(0.18, 2.82, 0.18, materials.trim, x + 2.88, -13.24 + lift, z + 1.24)
+    this.createBox(0.18, 2.82, 0.18, materials.trim, x - 0.1, -13.24 + lift, z - 1.24)
+    this.createBox(0.18, 2.82, 0.18, materials.trim, x - 0.1, -13.24 + lift, z + 1.24)
+    this.createBox(0.16, 2.1, 3, materials.trim, x + 1.42, -13.48 + lift, z)
+    this.createBox(0.84, 0.12, 2.82, materials.detail, x + 2.46, -11.22 + lift, z)
+    this.createMiniTower(x - 2.58, -11.74 + lift, z + 0.9, materials)
+    this.createDeskChair(x - 0.55, z + 2.18, materials, lift)
 
-    this.createMonitor(x - 1.6, -11.05, z - 0.55, materials, 0.12)
-    this.createMonitor(x + 0.2, -10.88, z - 0.1, materials, -0.05)
-    this.createKeyboard(x - 0.9, -12.22, z + 0.32, materials)
-    this.createCoffeeCup(x + 2.1, -12.05, z + 0.4, materials)
-    this.createChipDisplay(x + 1.1, -11.9, z - 0.7, materials)
+    this.createMonitor(x - 1.48, -10.95 + lift, z - 0.58, materials, 0.12)
+    this.createMonitor(x + 0.3, -10.8 + lift, z - 0.06, materials, -0.05)
+    this.createKeyboard(x - 0.82, -12.06 + lift, z + 0.44, materials)
+    this.createCoffeeCup(x + 2.08, -11.92 + lift, z + 0.46)
+    this.createChipDisplay(x + 1.18, -11.76 + lift, z - 0.74, materials)
 
-    const armBase = this.createBox(0.9, 0.5, 0.9, materials.console, x + 2.4, -12.25, z - 1.08)
-    const arm = this.createBox(0.24, 2.6, 0.24, materials.trim, x + 2.4, -10.8, z - 1.08)
-    const forearm = this.createBox(1.5, 0.18, 0.18, materials.trim, x + 1.86, -9.78, z - 1.08, 0, 0, 0.5)
-    const probe = this.createBox(0.16, 0.8, 0.16, materials.warning, x + 1.16, -10.28, z - 1.08)
+    const armBase = this.createBox(0.9, 0.5, 0.9, materials.console, x + 2.4, -12.25 + lift, z - 1.08)
+    const arm = this.createBox(0.24, 2.6, 0.24, materials.trim, x + 2.4, -10.8 + lift, z - 1.08)
+    const forearm = this.createBox(1.5, 0.18, 0.18, materials.trim, x + 1.86, -9.78 + lift, z - 1.08, 0, 0, 0.5)
+    const probe = this.createBox(0.16, 0.8, 0.16, materials.warning, x + 1.16, -10.28 + lift, z - 1.08)
 
     this.labBots.push({
       base: armBase,
       body: arm,
       head: forearm,
       probe,
-      anchor: new THREE.Vector3(x + 2.4, -12.25, z - 1.08),
+      anchor: new THREE.Vector3(x + 2.4, -12.25 + lift, z - 1.08),
       phase: 0.8,
       kind: 'arm',
+    })
+  }
+
+  createDeskChair(px, pz, materials, lift = 0) {
+    const seatY = -13.18 + lift
+
+    this.createBox(1.3, 0.16, 1.22, materials.console, px, seatY, pz, 0, 0.28, 0)
+    this.createBox(1.12, 0.12, 1.02, materials.detail, px, seatY + 0.09, pz, 0, 0.28, 0)
+    this.createBox(1.22, 1.36, 0.16, materials.console, px, seatY + 0.82, pz - 0.48, -0.08, 0.28, 0)
+    this.createBox(1.04, 0.92, 0.12, materials.detail, px, seatY + 0.8, pz - 0.42, -0.08, 0.28, 0)
+    this.createBox(0.12, 0.52, 0.82, materials.trim, px - 0.72, seatY + 0.18, pz - 0.04, 0, 0.28, -0.18)
+    this.createBox(0.12, 0.52, 0.82, materials.trim, px + 0.72, seatY + 0.18, pz - 0.04, 0, 0.28, 0.18)
+    this.createBox(0.14, 0.92, 0.14, materials.trim, px, seatY - 0.56, pz, 0, 0.28, 0)
+    this.createBox(0.88, 0.08, 0.12, materials.trim, px, seatY - 1.02, pz, 0, 0.28, 0)
+    this.createBox(0.12, 0.08, 0.88, materials.trim, px, seatY - 1.02, pz, 0, 0.28, 0)
+
+    ;[
+      [-0.42, -0.42],
+      [0.42, -0.42],
+      [-0.42, 0.42],
+      [0.42, 0.42],
+    ].forEach(([offsetX, offsetZ]) => {
+      this.createBox(0.14, 0.16, 0.14, materials.detail, px + offsetX, seatY - 1.12, pz + offsetZ)
     })
   }
 
@@ -1662,25 +1750,6 @@ export class NeuralRoomController {
     this.createBox(1.5, 0.18, 4.15, materials.trim, px, py - 2.48, pz, 0, ry, 0)
     this.createBox(0.18, 4.3, 0.42, materials.detail, px, py, pz - 1.2, 0, ry, 0)
     this.createBox(0.18, 4.3, 0.42, materials.detail, px, py, pz + 1.2, 0, ry, 0)
-
-    const texture = buildResearchPanelTexture(title, subtitle, ['Live chamber status', 'Weights and activations', 'Observation interface'], '#8ef0ff')
-    texture.colorSpace = THREE.SRGBColorSpace
-
-    const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.4, 1.4),
-      new THREE.MeshBasicMaterial({
-        map: texture,
-        transparent: true,
-        opacity: 0.96,
-      }),
-    )
-    screen.position.set(px, py + 0.4, pz)
-    screen.rotation.y = ry
-    screen.position.addScaledVector(
-      new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), ry),
-      0.72,
-    )
-    this.environmentGroup.add(screen)
 
     this.createEmissiveStrip(
       0.08,
