@@ -19,7 +19,7 @@ import {
   NODE_SPACING,
   ROOM_DIMENSIONS,
   TOTAL_CONNECTIONS,
-  XOR_DATA,
+  TRAINING_DATA,
 } from './constants.js'
 import { NeuralNetworkEngine } from './engine.js'
 
@@ -72,13 +72,17 @@ function getActivationTone(value) {
   return 'm'
 }
 
-function formatXorLabel(input, target) {
+function formatSampleLabel(input, target) {
   return `${input[0]},${input[1]} → ${target[0]}`
 }
 
+function isPredictionAligned(prediction, target) {
+  return Math.abs(prediction - target[0]) < 0.05
+}
+
 function createPlaceholderOutputs() {
-  return XOR_DATA.map(([input, target]) => ({
-    label: formatXorLabel(input, target),
+  return TRAINING_DATA.map(({ input, target }) => ({
+    label: formatSampleLabel(input, target),
     value: '—',
     correct: null,
   }))
@@ -91,7 +95,7 @@ function getStatusMeta(statusMode) {
     case 'paused':
       return { text: 'Pausado', tone: '' }
     case 'converged':
-      return { text: '¡Convergió!', tone: 'good' }
+      return { text: 'Modelo Excel listo', tone: 'good' }
     default:
       return { text: 'Listo', tone: '' }
   }
@@ -397,7 +401,7 @@ export function createInitialViewState() {
       statusTone: '',
       stepPosition: '0 / 0',
       sampleText: '—',
-      visualText: 'Flujo de datos + backprop + camara de nucleo',
+      visualText: 'Forward batch + backprop batch + visual 3D',
       outputs: createPlaceholderOutputs(),
       losses: [0],
       currentLossIndex: 0,
@@ -468,7 +472,7 @@ export class NeuralRoomController {
     this.sharedPulseGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1)
     this.forwardSignalColor = new THREE.Color(COLORS.forward)
     this.backwardSignalColor = new THREE.Color(COLORS.backward)
-    this.trainingCueText = 'Flujo forward + correccion + nucleo XOR'
+    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
 
     this.animate = this.animate.bind(this)
     this.handleResize = this.handleResize.bind(this)
@@ -1877,7 +1881,7 @@ export class NeuralRoomController {
     this.tourShotIndex = 0
     this.tourShotTime = 0
     this.tourLabel = ''
-    this.trainingCueText = 'Flujo forward + correccion + nucleo XOR'
+    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
     this.emitState()
   }
 
@@ -2279,7 +2283,7 @@ export class NeuralRoomController {
       })
     }
 
-    this.trainingCueText = 'Flujo forward + correccion + nucleo XOR'
+    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
 
     meta.input.forEach((value, index) => {
       this.flashNeuron(0, index, 'forward', 0.15 + value * 0.85)
@@ -2512,6 +2516,20 @@ export class NeuralRoomController {
     this.emitState()
   }
 
+  resetTraining() {
+    if (this.tourActive) {
+      return
+    }
+
+    this.autoTrain = false
+    this.statusMode = 'ready'
+    this.clearTrainingBursts()
+    this.clearSelection()
+    this.engine.initialize()
+    this.applyCurrentModelToScene()
+    this.emitState()
+  }
+
   stepForward() {
     if (this.tourActive) {
       return
@@ -2548,17 +2566,23 @@ export class NeuralRoomController {
     this.emitState()
   }
 
+  stepEpochForward() {
+    if (this.tourActive) {
+      return
+    }
+
+    const snapshot = this.engine.stepEpochForward()
+    this.syncStatusMode()
+    this.applyCurrentModelToScene()
+    this.playSnapshotCue(snapshot)
+    this.emitState()
+  }
+
   syncStatusMode() {
     const snapshot = this.engine.getCurrentSnapshot()
 
     if (!snapshot) {
       this.statusMode = 'ready'
-      return
-    }
-
-    if (snapshot.loss < 0.01) {
-      this.autoTrain = false
-      this.statusMode = 'converged'
       return
     }
 
@@ -2715,10 +2739,12 @@ export class NeuralRoomController {
   buildViewState() {
     const snapshot = this.engine.getCurrentSnapshot()
     const status = getStatusMeta(this.statusMode)
-    const outputs = this.engine.getXorPredictions().map((prediction) => ({
-      label: formatXorLabel(prediction.input, prediction.target),
+    const currentSampleIndex = snapshot?.sampleIndex ?? 0
+    const outputs = this.engine.getDatasetPredictions().map((prediction, index) => ({
+      label: formatSampleLabel(prediction.input, prediction.target),
       value: prediction.prediction.toFixed(2),
-      correct: Math.abs(prediction.prediction - prediction.target[0]) < 0.5,
+      correct: isPredictionAligned(prediction.prediction, prediction.target),
+      active: index === currentSampleIndex,
     }))
 
     return {
@@ -2748,16 +2774,21 @@ export class NeuralRoomController {
         statusText: status.text,
         statusTone: status.tone,
         stepPosition: snapshot
-          ? `${this.engine.historyIndex + 1} / ${this.engine.history.length}`
+          ? `muestra ${snapshot.sampleIndex + 1}/${snapshot.sampleCount} · frame ${this.engine.historyIndex + 1}/${this.engine.history.length}`
           : '0 / 0',
-        sampleText: snapshot ? formatXorLabel(snapshot.inp, snapshot.tgt) : '—',
+        activeSampleText: snapshot
+          ? `muestra activa ${snapshot.sampleIndex + 1} de ${snapshot.sampleCount}`
+          : 'muestra activa —',
+        sampleText: snapshot
+          ? `epoca ${snapshot.step} · ${formatSampleLabel(snapshot.inp, snapshot.tgt)}`
+          : '—',
         visualText: this.tourActive ? this.tourLabel : this.trainingCueText,
         outputs: outputs.length > 0 ? outputs : createPlaceholderOutputs(),
         losses:
-          this.engine.history.length > 0
-            ? this.engine.history.map((historySnapshot) => historySnapshot.loss)
+          this.engine.generatedEpochs.length > 0
+            ? this.engine.generatedEpochs.map((epochTrace) => epochTrace.averageLoss)
             : [0],
-        currentLossIndex: Math.max(this.engine.historyIndex, 0),
+        currentLossIndex: snapshot ? Math.max(snapshot.step - 1, 0) : 0,
       },
     }
   }
@@ -2980,10 +3011,10 @@ export class NeuralRoomController {
   animateLabEnvironment() {
     const energy = Math.min(1, this.trainingBursts.length / 18)
     const snapshot = this.engine.getCurrentSnapshot()
-    const outputs = this.engine.getXorPredictions().map((prediction) => ({
-      label: formatXorLabel(prediction.input, prediction.target),
+    const outputs = this.engine.getDatasetPredictions().map((prediction) => ({
+      label: formatSampleLabel(prediction.input, prediction.target),
       value: prediction.prediction.toFixed(2),
-      correct: Math.abs(prediction.prediction - prediction.target[0]) < 0.5,
+      correct: isPredictionAligned(prediction.prediction, prediction.target),
     }))
 
     this.labAccentMaterials.forEach((accent) => {

@@ -314,7 +314,7 @@
   margin: 0 0 14px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 3px;
   color: var(--blue2);
@@ -346,7 +346,7 @@
 
 .train-lbl {
   color: var(--dim);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 1.2px;
   font-weight: 600;
   text-transform: uppercase;
@@ -391,9 +391,8 @@
   padding: 5px 8px;
   border: 1px solid var(--border);
   background: rgba(10, 20, 32, 0.72);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 1px;
+  font-size: 13px;
+  font-weight: 600;  
   text-transform: uppercase;
 }
 
@@ -414,8 +413,7 @@
 
 #step-controls {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: stretch;
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
@@ -423,59 +421,61 @@
 }
 
 .step-btn {
-  flex: 1;
-  padding: 8px 4px;
-  background: transparent;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 1.2px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;  
   text-align: center;
+  text-transform: uppercase;  
+  border-radius: 12px;
 }
 
 .step-btn.primary {
-  border-color: var(--blue3);
-  color: var(--blue);
+  border-color: rgba(75, 188, 255, 0.44);
+  color: #d7f6ff;
+  background: linear-gradient(180deg, rgba(14, 54, 80, 0.96), rgba(8, 25, 38, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(143, 244, 255, 0.08), 0 14px 30px rgba(0, 0, 0, 0.22);
+}
+
+.step-btn-reset {
+  border-color: rgba(255, 188, 110, 0.34);
+  color: #ffd39f;
+  background: linear-gradient(180deg, rgba(42, 28, 13, 0.94), rgba(16, 11, 7, 0.98));
+}
+
+.step-btn-reset:hover {
+  border-color: var(--warning);
+  color: #fff0dc;
+  box-shadow: 0 0 22px rgba(255, 188, 110, 0.18);
+}
+
+.step-btn-epoch {
+  width: 100%;
+  margin-top: 10px;
+  border-color: rgba(142, 234, 255, 0.22);
+  color: #b8eaff;
+  background: linear-gradient(180deg, rgba(9, 22, 32, 0.9), rgba(4, 10, 16, 0.98));
+}
+
+.step-btn-epoch:hover {
+  border-color: rgba(142, 234, 255, 0.5);
+  color: #effbff;
 }
 
 #step-pos {
-  flex: 0 0 auto;
-  min-width: 60px;
-  font-size: 11px;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 0 4px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--dim);
   text-align: center;
-}
-
-#xor-outputs {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-
-.xor-row {
-  background: rgba(10, 20, 32, 0.72);
-  border: 1px solid var(--border);
-  padding: 6px 8px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.xor-in {
-  color: var(--dim);
-}
-
-.xor-out {
-  float: right;
-  font-weight: 500;
-}
-
-.xor-out.correct {
-  color: var(--success);
-}
-
-.xor-out.wrong {
-  color: var(--neg);
+  letter-spacing: 1.2px;
 }
 
 #loss-chart {
@@ -633,7 +633,7 @@
   #train-panel {
     right: 16px;
     bottom: 16px;
-    width: min(320px, calc(100vw - 32px));
+    width: min(320px, calc(100vw - 32px));    
   }
 
   #arrow-hint {

@@ -1,18 +1,16 @@
 import {
+  EXPECTED_EPOCH_LOSSES,
+  INITIAL_WEIGHTS,
   LAYERS,
   LEARNING_RATE,
   MAX_HISTORY,
-  XOR_DATA,
+  TRAINING_DATA,
 } from './constants.js'
 
 function cloneWeights(weights) {
   return weights.map((layerWeights) =>
     layerWeights.map((row) => row.slice()),
   )
-}
-
-function cloneBiases(biases) {
-  return biases.map((layerBiases) => layerBiases.slice())
 }
 
 function cloneLayers(values) {
@@ -25,6 +23,106 @@ function createZeroWeightUpdates(weights) {
   )
 }
 
+function multiplyVectorMatrix(vector, matrix) {
+  return matrix[0].map((_, columnIndex) =>
+    vector.reduce(
+      (sum, value, rowIndex) => sum + value * matrix[rowIndex][columnIndex],
+      0,
+    ),
+  )
+}
+
+function sigmoid(value) {
+  return 1 / (1 + Math.exp(-value))
+}
+
+function sigmoidVector(vector) {
+  return vector.map((value) => sigmoid(value))
+}
+
+function addMatrixInPlace(target, source) {
+  for (let rowIndex = 0; rowIndex < target.length; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < target[rowIndex].length; columnIndex += 1) {
+      target[rowIndex][columnIndex] += source[rowIndex][columnIndex]
+    }
+  }
+}
+
+function subtractScaledMatrix(weights, updates, scalar) {
+  return weights.map((layerWeights, layerIndex) =>
+    layerWeights.map((row, rowIndex) =>
+      row.map(
+        (value, columnIndex) => value - scalar * updates[layerIndex][rowIndex][columnIndex],
+      ),
+    ),
+  )
+}
+
+function outerProduct(left, right) {
+  return left.map((leftValue) => right.map((rightValue) => leftValue * rightValue))
+}
+
+function createEpochTrace(weights) {
+  const batchUpdates = createZeroWeightUpdates(weights)
+  const sampleTraces = TRAINING_DATA.map(({ input, target }) => {
+    const z1 = multiplyVectorMatrix(input, weights[0])
+    const a1 = sigmoidVector(z1)
+    const z2 = multiplyVectorMatrix(a1, weights[1])
+    const a2 = sigmoidVector(z2)
+    const z3 = multiplyVectorMatrix(a2, weights[2])
+    const a3 = sigmoidVector(z3)
+    const prediction = a3[0]
+    const expected = target[0]
+    const sampleLoss = Math.pow(expected - prediction, 2)
+    const d3 = [-2 * (expected - prediction) * prediction * (1 - prediction)]
+    const d2 = a2.map(
+      (activation, nodeIndex) =>
+        d3[0] * weights[2][nodeIndex][0] * activation * (1 - activation),
+    )
+    const d1 = a1.map((activation, nodeIndex) => {
+      let error = 0
+
+      for (let nextNodeIndex = 0; nextNodeIndex < d2.length; nextNodeIndex += 1) {
+        error += d2[nextNodeIndex] * weights[1][nodeIndex][nextNodeIndex]
+      }
+
+      return error * activation * (1 - activation)
+    })
+
+    const sampleUpdates = [
+      outerProduct(input, d1),
+      outerProduct(a1, d2),
+      outerProduct(a2, d3),
+    ]
+
+    addMatrixInPlace(batchUpdates[0], sampleUpdates[0])
+    addMatrixInPlace(batchUpdates[1], sampleUpdates[1])
+    addMatrixInPlace(batchUpdates[2], sampleUpdates[2])
+
+    return {
+      input: input.slice(),
+      target: target.slice(),
+      prediction,
+      sampleLoss,
+      zLayers: [input.slice(), z1, z2, z3],
+      activations: [input.slice(), a1, a2, a3],
+      deltas: [Array.from({ length: LAYERS[0] }, () => 0), d1, d2, d3],
+      sampleUpdates,
+    }
+  })
+
+  const averageLoss =
+    sampleTraces.reduce((sum, trace) => sum + trace.sampleLoss, 0) / sampleTraces.length
+
+  return {
+    weights: cloneWeights(weights),
+    averageLoss,
+    batchUpdates,
+    sampleTraces,
+    nextWeights: subtractScaledMatrix(weights, batchUpdates, LEARNING_RATE),
+  }
+}
+
 export class NeuralNetworkEngine {
   constructor() {
     this.layers = LAYERS
@@ -32,250 +130,143 @@ export class NeuralNetworkEngine {
     this.maxHistory = MAX_HISTORY
     this.history = []
     this.historyIndex = -1
-    this.dataIndex = 0
-    this.lastInput = [0, 0]
-    this.weights = []
-    this.biases = []
+    this.generatedEpochs = []
     this.activations = this.layers.map((count) => Array.from({ length: count }, () => 0))
+    this.biases = []
+    this.weights = cloneWeights(INITIAL_WEIGHTS)
+    this.lastInput = TRAINING_DATA[0].input.slice()
 
     this.initialize()
   }
 
   initialize() {
-    this.weights = []
-
-    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
-      const layerWeights = []
-
-      for (let fromIndex = 0; fromIndex < this.layers[layerIndex]; fromIndex += 1) {
-        const row = []
-
-        for (let toIndex = 0; toIndex < this.layers[layerIndex + 1]; toIndex += 1) {
-          row.push(this.randomWeight())
-        }
-
-        layerWeights.push(row)
-      }
-
-      this.weights.push(layerWeights)
-    }
-
-    this.biases = []
-
-    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
-      this.biases.push(
-        Array.from(
-          { length: this.layers[layerIndex + 1] },
-          () => this.randomWeight() * 0.1,
-        ),
-      )
-    }
-
-    this.activations = this.layers.map((count) =>
-      Array.from({ length: count }, () => 0),
-    )
     this.history = []
     this.historyIndex = -1
-    this.dataIndex = 0
-    this.lastInput = [0, 0]
+    this.generatedEpochs = []
+    this.weights = cloneWeights(INITIAL_WEIGHTS)
+    this.lastInput = TRAINING_DATA[0].input.slice()
+    this.activations = this.layers.map((count) => Array.from({ length: count }, () => 0))
 
-    this.forwardInput([0, 0])
-    this.saveSnapshot(this.totalLoss(), [0, 0], [0], this.buildSnapshotMeta([0, 0], [0]))
+    this.ensureFrame(0)
     this.applySnapshot(this.getCurrentSnapshot())
   }
 
-  buildSnapshotMeta(input, target, gradients, connectionUpdates, activations) {
-    const zeroGradients = this.layers.map((count) =>
-      Array.from({ length: count }, () => 0),
-    )
+  ensureFrame(frameIndex) {
+    while (this.history.length <= frameIndex) {
+      const baseWeights =
+        this.generatedEpochs.length === 0
+          ? cloneWeights(INITIAL_WEIGHTS)
+          : cloneWeights(this.generatedEpochs[this.generatedEpochs.length - 1].nextWeights)
 
-    return {
-      input: input.slice(),
-      target: target.slice(),
-      output: (activations ?? this.activations)[this.layers.length - 1].slice(),
-      forward: cloneLayers(activations ?? this.activations),
-      gradients: cloneLayers(gradients ?? zeroGradients),
-      connectionUpdates: cloneWeights(connectionUpdates ?? createZeroWeightUpdates(this.weights)),
+      const epochTrace = createEpochTrace(baseWeights)
+      const epochNumber = this.generatedEpochs.length + 1
+      this.generatedEpochs.push(epochTrace)
+
+      epochTrace.sampleTraces.forEach((sampleTrace, sampleIndex) => {
+        this.history.push({
+          w: cloneWeights(epochTrace.weights),
+          b: [],
+          loss: epochTrace.averageLoss,
+          step: epochNumber,
+          epoch: epochNumber,
+          sampleIndex,
+          sampleCount: epochTrace.sampleTraces.length,
+          inp: sampleTrace.input.slice(),
+          tgt: sampleTrace.target.slice(),
+          meta: this.buildSnapshotMeta(epochTrace, sampleTrace, epochNumber, sampleIndex),
+        })
+      })
     }
+
+    if (this.historyIndex === -1 && this.history.length > 0) {
+      this.historyIndex = 0
+    }
+
+    return this.history[frameIndex] ?? this.history[this.history.length - 1] ?? null
   }
 
-  randomWeight() {
-    return (Math.random() * 2 - 1) * 0.8
-  }
-
-  sigmoid(value) {
-    return 1 / (1 + Math.exp(-value))
-  }
-
-  relu(value) {
-    return Math.max(0, value)
-  }
-
-  reluDerivative(value) {
-    return value > 0 ? 1 : 0
+  buildSnapshotMeta(epochTrace, sampleTrace, epochNumber, sampleIndex) {
+    return {
+      input: sampleTrace.input.slice(),
+      target: sampleTrace.target.slice(),
+      output: [sampleTrace.prediction],
+      forward: cloneLayers(sampleTrace.activations),
+      gradients: cloneLayers(sampleTrace.deltas),
+      connectionUpdates: cloneWeights(sampleTrace.sampleUpdates),
+      epochConnectionUpdates: cloneWeights(epochTrace.batchUpdates),
+      zValues: cloneLayers(sampleTrace.zLayers),
+      sampleLoss: sampleTrace.sampleLoss,
+      averageLoss: epochTrace.averageLoss,
+      epochNumber,
+      sampleIndex,
+      sampleCount: epochTrace.sampleTraces.length,
+      expectedLoss:
+        EXPECTED_EPOCH_LOSSES[epochNumber - 1] ?? epochTrace.averageLoss,
+    }
   }
 
   forwardInput(input) {
     this.lastInput = input.slice()
-    this.activations[0][0] = input[0]
-    this.activations[0][1] = input[1]
+    this.activations[0] = input.slice()
 
     for (let layerIndex = 1; layerIndex < this.layers.length; layerIndex += 1) {
-      for (let nodeIndex = 0; nodeIndex < this.layers[layerIndex]; nodeIndex += 1) {
-        let sum = this.biases[layerIndex - 1][nodeIndex]
-
-        for (
-          let sourceIndex = 0;
-          sourceIndex < this.layers[layerIndex - 1];
-          sourceIndex += 1
-        ) {
-          sum +=
-            this.activations[layerIndex - 1][sourceIndex] *
-            this.weights[layerIndex - 1][sourceIndex][nodeIndex]
-        }
-
-        this.activations[layerIndex][nodeIndex] =
-          layerIndex === this.layers.length - 1 ? this.sigmoid(sum) : this.relu(sum)
-      }
+      const previousActivations = this.activations[layerIndex - 1]
+      const sums = multiplyVectorMatrix(previousActivations, this.weights[layerIndex - 1])
+      this.activations[layerIndex] = sigmoidVector(sums)
     }
 
     return this.activations
-  }
-
-  backprop(input, target) {
-    this.forwardInput(input)
-    const forwardActivations = cloneLayers(this.activations)
-
-    const deltas = this.layers.map((count) =>
-      Array.from({ length: count }, () => 0),
-    )
-    const lastLayerIndex = this.layers.length - 1
-    const connectionUpdates = createZeroWeightUpdates(this.weights)
-
-    for (let nodeIndex = 0; nodeIndex < this.layers[lastLayerIndex]; nodeIndex += 1) {
-      const output = this.activations[lastLayerIndex][nodeIndex]
-      deltas[lastLayerIndex][nodeIndex] =
-        (output - target[nodeIndex]) * output * (1 - output)
-    }
-
-    for (let layerIndex = lastLayerIndex - 1; layerIndex >= 1; layerIndex -= 1) {
-      for (let nodeIndex = 0; nodeIndex < this.layers[layerIndex]; nodeIndex += 1) {
-        let error = 0
-
-        for (
-          let nextNodeIndex = 0;
-          nextNodeIndex < this.layers[layerIndex + 1];
-          nextNodeIndex += 1
-        ) {
-          error +=
-            deltas[layerIndex + 1][nextNodeIndex] *
-            this.weights[layerIndex][nodeIndex][nextNodeIndex]
-        }
-
-        deltas[layerIndex][nodeIndex] =
-          error * this.reluDerivative(this.activations[layerIndex][nodeIndex])
-      }
-    }
-
-    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
-      for (let nodeIndex = 0; nodeIndex < this.layers[layerIndex + 1]; nodeIndex += 1) {
-        this.biases[layerIndex][nodeIndex] -=
-          this.learningRate * deltas[layerIndex + 1][nodeIndex]
-
-        for (
-          let sourceIndex = 0;
-          sourceIndex < this.layers[layerIndex];
-          sourceIndex += 1
-        ) {
-          const weightShift =
-            this.learningRate *
-            deltas[layerIndex + 1][nodeIndex] *
-            this.activations[layerIndex][sourceIndex]
-
-          connectionUpdates[layerIndex][sourceIndex][nodeIndex] = weightShift
-          this.weights[layerIndex][sourceIndex][nodeIndex] -=
-            weightShift
-        }
-      }
-    }
-
-    let loss = 0
-
-    for (let nodeIndex = 0; nodeIndex < this.layers[lastLayerIndex]; nodeIndex += 1) {
-      loss +=
-        0.5 *
-        Math.pow(this.activations[lastLayerIndex][nodeIndex] - target[nodeIndex], 2)
-    }
-
-    return {
-      loss,
-      meta: this.buildSnapshotMeta(
-        input,
-        target,
-        deltas,
-        connectionUpdates,
-        forwardActivations,
-      ),
-    }
   }
 
   totalLoss() {
     const restoreInput = this.lastInput.slice()
     let loss = 0
 
-    for (let pairIndex = 0; pairIndex < XOR_DATA.length; pairIndex += 1) {
-      this.forwardInput(XOR_DATA[pairIndex][0])
-      const output = this.activations[this.layers.length - 1][0]
-      loss += 0.5 * Math.pow(output - XOR_DATA[pairIndex][1][0], 2)
-    }
-
-    this.forwardInput(restoreInput)
-    return loss
-  }
-
-  saveSnapshot(loss, input, target, meta = this.buildSnapshotMeta(input, target)) {
-    if (this.historyIndex < this.history.length - 1) {
-      this.history = this.history.slice(0, this.historyIndex + 1)
-    }
-
-    this.history.push({
-      w: cloneWeights(this.weights),
-      b: cloneBiases(this.biases),
-      loss,
-      step: this.history.length,
-      inp: input.slice(),
-      tgt: target.slice(),
-      meta,
+    TRAINING_DATA.forEach(({ input, target }) => {
+      this.forwardInput(input)
+      loss += Math.pow(target[0] - this.activations[this.layers.length - 1][0], 2)
     })
 
-    if (this.history.length > this.maxHistory) {
-      this.history.shift()
-    }
-
-    this.historyIndex = this.history.length - 1
+    this.forwardInput(restoreInput)
+    return loss / TRAINING_DATA.length
   }
 
   applySnapshot(snapshot) {
+    if (!snapshot) {
+      return
+    }
+
     this.weights = cloneWeights(snapshot.w)
-    this.biases = cloneBiases(snapshot.b)
+    this.biases = []
     this.forwardInput(snapshot.inp)
   }
 
   getCurrentSnapshot() {
-    return this.history[this.historyIndex]
+    return this.history[this.historyIndex] ?? null
   }
 
   stepForward() {
-    const pair = XOR_DATA[this.dataIndex % XOR_DATA.length]
-    this.dataIndex += 1
-    const result = this.backprop(pair[0], pair[1])
-    this.saveSnapshot(this.totalLoss(), pair[0], pair[1], result.meta)
+    if (this.historyIndex < this.history.length - 1) {
+      this.historyIndex += 1
+      this.applySnapshot(this.getCurrentSnapshot())
+      return this.getCurrentSnapshot()
+    }
+
+    const nextFrame = this.ensureFrame(this.history.length)
+
+    if (!nextFrame || this.historyIndex >= this.history.length - 1) {
+      this.applySnapshot(this.getCurrentSnapshot())
+      return this.getCurrentSnapshot()
+    }
+
+    this.historyIndex += 1
     this.applySnapshot(this.getCurrentSnapshot())
     return this.getCurrentSnapshot()
   }
 
   stepBack() {
     if (this.historyIndex <= 0) {
+      this.applySnapshot(this.getCurrentSnapshot())
       return this.getCurrentSnapshot()
     }
 
@@ -285,13 +276,22 @@ export class NeuralNetworkEngine {
   }
 
   stepForwardNav() {
-    if (this.historyIndex < this.history.length - 1) {
-      this.historyIndex += 1
-      this.applySnapshot(this.getCurrentSnapshot())
-      return this.getCurrentSnapshot()
+    return this.stepForward()
+  }
+
+  stepEpochForward() {
+    const currentSnapshot = this.getCurrentSnapshot()
+
+    if (!currentSnapshot) {
+      return this.ensureFrame(0)
     }
 
-    return this.stepForward()
+    const targetIndex = this.historyIndex + (currentSnapshot.sampleCount - currentSnapshot.sampleIndex)
+    this.ensureFrame(targetIndex)
+    this.historyIndex = Math.min(targetIndex, this.history.length - 1)
+    this.applySnapshot(this.getCurrentSnapshot())
+
+    return this.getCurrentSnapshot()
   }
 
   getIncomingWeights(layerIndex, neuronIndex) {
@@ -304,10 +304,10 @@ export class NeuralNetworkEngine {
     })
   }
 
-  getXorPredictions() {
+  getDatasetPredictions() {
     const restoreInput = this.lastInput.slice()
 
-    const predictions = XOR_DATA.map(([input, target]) => {
+    const predictions = TRAINING_DATA.map(({ input, target }) => {
       this.forwardInput(input)
 
       return {
@@ -319,6 +319,10 @@ export class NeuralNetworkEngine {
 
     this.forwardInput(restoreInput)
     return predictions
+  }
+
+  getXorPredictions() {
+    return this.getDatasetPredictions()
   }
 
   predict(input) {

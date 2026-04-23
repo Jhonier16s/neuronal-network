@@ -24,7 +24,7 @@ function EntryOverlay({ onEnter }) {
       <p>
         Room tour cinematografico y exploracion libre
         <br />
-        Racks vivos · banco de hardware · prototipos roboticos · nucleo XOR
+        Racks vivos · banco de hardware · prototipos roboticos · red batch Excel
       </p>
 
       <button id="ebtn" onClick={onEnter}>

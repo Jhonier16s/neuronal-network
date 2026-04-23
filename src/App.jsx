@@ -61,7 +61,9 @@ function App() {
         training={viewState.training}
         cinematicActive={viewState.cinematicActive}
         onStepBack={() => controller?.stepBack()}
+        onReset={() => controller?.resetTraining()}
         onStepForward={() => controller?.stepForward()}
+        onStepEpochForward={() => controller?.stepEpochForward()}
       />
 
       {viewState.cinematicActive ? null : (
