@@ -17,8 +17,11 @@ function App() {
   const controllerRef = useRef(null)
   const [initialModelConfig] = useState(() => createDefaultModelConfig())
   const [viewState, setViewState] = useState(() => createInitialViewState(initialModelConfig))
+  const [sceneReady, setSceneReady] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
+
     const controller = new NeuralRoomController({
       modelConfig: initialModelConfig,
       onStateChange: (nextState) => {
@@ -27,11 +30,27 @@ function App() {
     })
 
     controllerRef.current = controller
-    controller.mount({
-      viewportEl: viewportRef.current,
-    })
+    setSceneReady(false)
+
+    Promise.resolve()
+      .then(() =>
+        controller.mount({
+          viewportEl: viewportRef.current,
+        }),
+      )
+      .then(() => {
+        if (!cancelled) {
+          setSceneReady(true)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSceneReady(true)
+        }
+      })
 
     return () => {
+      cancelled = true
       controller.unmount()
       controllerRef.current = null
     }
@@ -42,6 +61,11 @@ function App() {
   return (
     <div className="app-shell">
       <div id="scene-root" ref={viewportRef} aria-hidden="true" />
+      <div className={`scene-loader ${sceneReady ? 'hidden' : ''}`}>
+        <div className="scene-loader-chip">Optimizando escena</div>
+        <h2>Neural Room</h2>
+        <p>Preparando shaders, buffers y postproceso para que la entrada sea mas fluida.</p>
+      </div>
 
       <TopBar
         architectureLabel={viewState.architectureLabel}

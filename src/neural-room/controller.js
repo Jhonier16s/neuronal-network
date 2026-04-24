@@ -86,6 +86,87 @@ function formatPredictionValue(prediction) {
   return formatVector(prediction)
 }
 
+const QUALITY_PRESETS = {
+  high: {
+    maxPixelRatio: 1.35,
+    nodeSegments: 32,
+    tubeSegments: 36,
+    pointLights: true,
+    pointLightDistance: 5.8,
+    curveSamples: 30,
+    panelRefreshHz: 10,
+    bloomStrengthScale: 1,
+  },
+  medium: {
+    maxPixelRatio: 1.05,
+    nodeSegments: 24,
+    tubeSegments: 26,
+    pointLights: true,
+    pointLightDistance: 4.8,
+    curveSamples: 24,
+    panelRefreshHz: 7,
+    bloomStrengthScale: 0.86,
+  },
+  low: {
+    maxPixelRatio: 0.85,
+    nodeSegments: 18,
+    tubeSegments: 18,
+    pointLights: false,
+    pointLightDistance: 0,
+    curveSamples: 18,
+    panelRefreshHz: 5,
+    bloomStrengthScale: 0.65,
+  },
+}
+
+function detectQualityTier() {
+  if (typeof navigator === 'undefined') {
+    return 'medium'
+  }
+
+  const memory = navigator.deviceMemory ?? 8
+  const cores = navigator.hardwareConcurrency ?? 4
+  const isMobile = /android|iphone|ipad|mobile/i.test(navigator.userAgent ?? '')
+
+  if (memory <= 2 || cores <= 2) {
+    return 'low'
+  }
+
+  if (isMobile || memory <= 4 || cores <= 4) {
+    return 'medium'
+  }
+
+  return 'high'
+}
+
+function buildCurveLut(curve, sampleCount) {
+  const points = []
+  const tangents = []
+
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const t = index / sampleCount
+    points.push(curve.getPoint(t))
+    tangents.push(curve.getTangent(t).normalize())
+  }
+
+  return { points, tangents }
+}
+
+function sampleCurveLut(curveLut, t, targetPoint, targetTangent) {
+  const clamped = clamp(t, 0, 1)
+  const lastIndex = curveLut.points.length - 1
+  const scaledIndex = clamped * lastIndex
+  const leftIndex = Math.floor(scaledIndex)
+  const rightIndex = Math.min(lastIndex, leftIndex + 1)
+  const alpha = scaledIndex - leftIndex
+
+  targetPoint.copy(curveLut.points[leftIndex]).lerp(curveLut.points[rightIndex], alpha)
+
+  if (targetTangent) {
+    targetTangent.copy(curveLut.tangents[leftIndex]).lerp(curveLut.tangents[rightIndex], alpha).normalize()
+  }
+}
+
 function createPlaceholderOutputs(trainingData) {
   return trainingData.map(({ input, target }) => ({
     label: formatSampleLabel(input, target),
@@ -423,6 +504,8 @@ export function createInitialViewState(modelConfig = createDefaultModelConfig())
 export class NeuralRoomController {
   constructor({ onStateChange, modelConfig = createDefaultModelConfig() }) {
     this.onStateChange = onStateChange
+    this.qualityTier = detectQualityTier()
+    this.quality = QUALITY_PRESETS[this.qualityTier]
     this.modelConfig = modelConfig
     this.layers = []
     this.layerNames = []
@@ -464,12 +547,21 @@ export class NeuralRoomController {
     this.displayPanels = []
     this.heroSpotlight = null
     this.selectedNeuron = null
+    this.weightTextureCache = new Map()
+    this.trainingBurstPool = []
     this.keys = {}
     this.listeners = []
     this.animationFrameId = null
+    this.animationActive = false
     this.tick = 0
     this.frameCount = 0
     this.lastFrameTime = 0
+    this.panelRefreshElapsed = 999
+    this.performanceElapsed = 0
+    this.performanceFrameCount = 0
+    this.dynamicPixelRatioScale = 1
+    this.dynamicBloomScale = 1
+    this.currentPixelRatio = 1
     this.phase2d = 0
     this.camX = CAMERA_DEFAULT.x
     this.camY = CAMERA_DEFAULT.y
@@ -489,7 +581,11 @@ export class NeuralRoomController {
     this.tempUp = new THREE.Vector3(0, 1, 0)
     this.tempQuaternion = new THREE.Quaternion()
     this.tempTangent = new THREE.Vector3()
+    this.tempPointA = new THREE.Vector3()
+    this.tempPointB = new THREE.Vector3()
+    this.viewportSize = new THREE.Vector2(1, 1)
     this.sharedPulseGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1)
+    this.sharedTrainingBurstGeometry = new THREE.CylinderGeometry(1, 0.8, 1, 8, 1)
     this.forwardSignalColor = new THREE.Color(COLORS.forward)
     this.backwardSignalColor = new THREE.Color(COLORS.backward)
     this.trainingCueText = 'Forward + backprop + actualizacion de pesos'
@@ -504,6 +600,7 @@ export class NeuralRoomController {
     this.handlePointerLockChange = this.handlePointerLockChange.bind(this)
     this.handleMouseMove = this.handleMouseMove.bind(this)
     this.handleWheel = this.handleWheel.bind(this)
+    this.handleVisibilityChange = this.handleVisibilityChange.bind(this)
   }
 
   applyModelConfig(modelConfig, { rebuildScene = true, emitState = true } = {}) {
@@ -545,7 +642,6 @@ export class NeuralRoomController {
           const materials = Array.isArray(object.material) ? object.material : [object.material]
 
           materials.forEach((material) => {
-            material.map?.dispose?.()
             material.dispose?.()
           })
         }
@@ -553,6 +649,16 @@ export class NeuralRoomController {
 
       this.scene?.remove(this.networkGroup)
     }
+
+    this.weightSprites.forEach((spriteRecord) => {
+      this.releaseWeightTexture(spriteRecord.textureKey)
+      spriteRecord.material.dispose?.()
+    })
+
+    this.layerSprites.forEach((spriteRecord) => {
+      spriteRecord.texture.dispose?.()
+      spriteRecord.material.dispose?.()
+    })
 
     this.networkGroup = new THREE.Group()
     this.scene?.add(this.networkGroup)
@@ -565,7 +671,7 @@ export class NeuralRoomController {
     this.buildNetworkObjects()
   }
 
-  mount({ viewportEl }) {
+  async mount({ viewportEl }) {
     if (!viewportEl) {
       return
     }
@@ -575,15 +681,13 @@ export class NeuralRoomController {
     this.attachListeners()
     this.handleResize()
     this.applyCurrentModelToScene()
+    await this.warmupRenderer()
     this.emitState()
-    this.animate()
+    this.renderFrame()
   }
 
   unmount() {
-    if (this.animationFrameId) {
-      cancelAnimationFrame(this.animationFrameId)
-      this.animationFrameId = null
-    }
+    this.stopAnimationLoop()
 
     if (document.pointerLockElement === this.renderer?.domElement) {
       document.exitPointerLock?.()
@@ -594,10 +698,57 @@ export class NeuralRoomController {
     document.body.style.cursor = ''
   }
 
+  startAnimationLoop() {
+    if (this.animationActive || document.hidden) {
+      return
+    }
+
+    this.animationActive = true
+    this.lastFrameTime = 0
+    this.animationFrameId = requestAnimationFrame(this.animate)
+  }
+
+  stopAnimationLoop() {
+    this.animationActive = false
+
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId)
+      this.animationFrameId = null
+    }
+
+    this.lastFrameTime = 0
+  }
+
+  async warmupRenderer() {
+    if (!this.renderer || !this.scene || !this.camera) {
+      return
+    }
+
+    if (typeof this.renderer.compileAsync === 'function') {
+      await this.renderer.compileAsync(this.scene, this.camera)
+    }
+
+    this.renderFrame()
+  }
+
+  renderFrame() {
+    if (!this.renderer || !this.scene || !this.camera) {
+      return
+    }
+
+    if (this.composer) {
+      this.composer.render()
+      return
+    }
+
+    this.renderer.render(this.scene, this.camera)
+  }
+
   createScene() {
     this.viewportEl.innerHTML = ''
     this.tourAnchors.clear()
     this.tourShots = []
+    this.measureViewport()
 
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(COLORS.background)
@@ -605,16 +756,18 @@ export class NeuralRoomController {
 
     this.camera = new THREE.PerspectiveCamera(
       60,
-      window.innerWidth / window.innerHeight,
+      this.viewportSize.x / this.viewportSize.y,
       0.1,
       300,
     )
     this.camera.position.set(this.camX, this.camY, this.camZ)
     this.camera.lookAt(0, 0, 0)
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+    })
+    this.renderer.setSize(this.viewportSize.x, this.viewportSize.y)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.24
@@ -644,7 +797,7 @@ export class NeuralRoomController {
     this.composer = new EffectComposer(this.renderer)
     this.renderPass = new RenderPass(this.scene, this.camera)
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      this.viewportSize.clone(),
       0.28,
       0.2,
       0.72,
@@ -652,6 +805,38 @@ export class NeuralRoomController {
 
     this.composer.addPass(this.renderPass)
     this.composer.addPass(this.bloomPass)
+  }
+
+  measureViewport() {
+    this.viewportSize.set(
+      Math.max(1, this.viewportEl?.clientWidth ?? window.innerWidth ?? 1),
+      Math.max(1, this.viewportEl?.clientHeight ?? window.innerHeight ?? 1),
+    )
+  }
+
+  getTargetPixelRatio() {
+    const baseRatio = Math.min(window.devicePixelRatio || 1, this.quality.maxPixelRatio)
+    return clamp(baseRatio * this.dynamicPixelRatioScale, 0.65, this.quality.maxPixelRatio)
+  }
+
+  applyRendererQuality(force = false) {
+    if (!this.renderer) {
+      return
+    }
+
+    this.measureViewport()
+
+    const targetPixelRatio = this.getTargetPixelRatio()
+    const pixelRatioChanged = Math.abs(targetPixelRatio - this.currentPixelRatio) > 0.04
+
+    if (force || pixelRatioChanged) {
+      this.currentPixelRatio = targetPixelRatio
+      this.renderer.setPixelRatio(targetPixelRatio)
+    }
+
+    this.renderer.setSize(this.viewportSize.x, this.viewportSize.y, false)
+    this.composer?.setSize(this.viewportSize.x, this.viewportSize.y)
+    this.bloomPass?.setSize?.(this.viewportSize.x, this.viewportSize.y)
   }
 
   createRoom() {
@@ -2084,7 +2269,11 @@ export class NeuralRoomController {
     this.weightSprites = []
     this.layerSprites = []
 
-    const sphereGeometry = new THREE.SphereGeometry(0.84, 40, 40)
+    const sphereGeometry = new THREE.SphereGeometry(
+      0.84,
+      this.quality.nodeSegments,
+      this.quality.nodeSegments,
+    )
 
     for (let layerIndex = 0; layerIndex < this.layers.length; layerIndex += 1) {
       this.neuronMap.push([])
@@ -2103,9 +2292,17 @@ export class NeuralRoomController {
         mesh.position.copy(position)
         this.networkGroup.add(mesh)
 
-          const pointLight = new THREE.PointLight(COLORS.nodeLight, 0.78 + activation * 0.86, 5.8)
-        pointLight.position.copy(position)
-        this.networkGroup.add(pointLight)
+        let pointLight = null
+
+        if (this.quality.pointLights) {
+          pointLight = new THREE.PointLight(
+            COLORS.nodeLight,
+            0.78 + activation * 0.86,
+            this.quality.pointLightDistance,
+          )
+          pointLight.position.copy(position)
+          this.networkGroup.add(pointLight)
+        }
 
         const neuronRecord = {
           mesh,
@@ -2134,12 +2331,14 @@ export class NeuralRoomController {
           const to = this.nodePointMap[layerIndex + 1][toIndex]
           const seed = layerIndex * 100 + fromIndex * 10 + toIndex
           const curve = this.makeCurve(from, to, seed)
+          const curveLut = buildCurveLut(curve, this.quality.curveSamples)
           const base = this.makeBaseTube(curve, weight)
 
           this.networkGroup.add(base.mesh)
           this.connections.push({
             base,
             curve,
+            curveLut,
             weight,
             layer: layerIndex,
             fromIndex,
@@ -2187,12 +2386,15 @@ export class NeuralRoomController {
           const totalInLayer = this.layers[layerIndex] * this.layers[layerIndex + 1]
           const indexInLayer = fromIndex * this.layers[layerIndex + 1] + toIndex
           const tPosition = 0.22 + ((indexInLayer + 0.5) / totalInLayer) * 0.56
-          const curve = this.makeCurve(from, to, seed)
-          const point = curve.getPoint(tPosition)
-          const tangent = curve.getTangent(tPosition)
+          const curveLut = this.connections[weightLabelData.length]?.curveLut
+          const point = new THREE.Vector3()
+          const tangent = new THREE.Vector3()
           const perpendicular = new THREE.Vector3(-tangent.y, tangent.x, 0).normalize()
           const side = (fromIndex + toIndex) % 2 === 0 ? 1 : -1
           const offsetDistance = 0.5 + indexInLayer * 0.15
+
+          sampleCurveLut(curveLut, tPosition, point, tangent)
+          perpendicular.set(-tangent.y, tangent.x, 0).normalize()
 
           point.addScaledVector(perpendicular, side * offsetDistance)
           point.z += ((indexInLayer % 3) - 1) * 0.4
@@ -2265,9 +2467,9 @@ export class NeuralRoomController {
   }
 
   createWeightSprite(weight) {
-    const texture = buildWeightTexture(weight)
+    const textureRecord = this.acquireWeightTexture(weight)
     const material = new THREE.SpriteMaterial({
-      map: texture,
+      map: textureRecord.texture,
       transparent: true,
       opacity: 0.92,
       depthTest: false,
@@ -2276,7 +2478,51 @@ export class NeuralRoomController {
     sprite.scale.set(1.8, 0.52, 1)
     sprite.renderOrder = 999
 
-    return { sprite, material, texture }
+    return {
+      sprite,
+      material,
+      texture: textureRecord.texture,
+      textureKey: textureRecord.key,
+    }
+  }
+
+  acquireWeightTexture(weight) {
+    const key = `${weight >= 0 ? '+' : ''}${weight.toFixed(3)}`
+    let textureRecord = this.weightTextureCache.get(key)
+
+    if (!textureRecord) {
+      textureRecord = {
+        texture: buildWeightTexture(weight),
+        refs: 0,
+      }
+      this.weightTextureCache.set(key, textureRecord)
+    }
+
+    textureRecord.refs += 1
+
+    return {
+      key,
+      texture: textureRecord.texture,
+    }
+  }
+
+  releaseWeightTexture(textureKey) {
+    if (!textureKey) {
+      return
+    }
+
+    const textureRecord = this.weightTextureCache.get(textureKey)
+
+    if (!textureRecord) {
+      return
+    }
+
+    textureRecord.refs -= 1
+
+    if (textureRecord.refs <= 0) {
+      textureRecord.texture.dispose?.()
+      this.weightTextureCache.delete(textureKey)
+    }
   }
 
   createLayerLabelSprite(name, activationFn) {
@@ -2310,11 +2556,18 @@ export class NeuralRoomController {
   }
 
   refreshWeightSprite(spriteRecord, weight) {
-    const texture = buildWeightTexture(weight)
+    const nextKey = `${weight >= 0 ? '+' : ''}${weight.toFixed(3)}`
 
-    spriteRecord.texture.dispose()
-    spriteRecord.texture = texture
-    spriteRecord.material.map = texture
+    if (spriteRecord.textureKey === nextKey) {
+      return
+    }
+
+    this.releaseWeightTexture(spriteRecord.textureKey)
+
+    const textureRecord = this.acquireWeightTexture(weight)
+    spriteRecord.textureKey = textureRecord.key
+    spriteRecord.texture = textureRecord.texture
+    spriteRecord.material.map = textureRecord.texture
     spriteRecord.material.needsUpdate = true
   }
 
@@ -2339,7 +2592,7 @@ export class NeuralRoomController {
     const radius = 0.012 + absoluteWeight * 0.1
     const baseColor = getWeightColor3(weight)
     const baseOpacity = 0.18 + absoluteWeight * 0.28
-    const geometry = new THREE.TubeGeometry(curve, 48, radius, 5, false)
+    const geometry = new THREE.TubeGeometry(curve, this.quality.tubeSegments, radius, 5, false)
     const material = new THREE.MeshBasicMaterial({
       color: baseColor,
       transparent: true,
@@ -2376,26 +2629,13 @@ export class NeuralRoomController {
       return
     }
 
-    const geometry = new THREE.CylinderGeometry(
-      0.055 + intensity * 0.11,
-      0.04 + intensity * 0.09,
-      0.5,
-      8,
-      1,
-    )
-    const material = new THREE.MeshBasicMaterial({
-      color: kind === 'forward' ? COLORS.forward : COLORS.backward,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-    })
-    const mesh = new THREE.Mesh(geometry, material)
-    mesh.visible = false
-    this.networkGroup.add(mesh)
+    const burst = this.acquireTrainingBurst(kind)
+    burst.mesh.visible = false
+    burst.mesh.scale.set(1, 1, 1)
+    burst.material.opacity = 0
 
     this.trainingBursts.push({
-      mesh,
-      material,
+      ...burst,
       connection,
       kind,
       direction,
@@ -2407,15 +2647,50 @@ export class NeuralRoomController {
     })
   }
 
-  disposeTrainingBurst(burst) {
+  acquireTrainingBurst(kind) {
+    const pooled = this.trainingBurstPool.pop()
+
+    if (pooled) {
+      pooled.material.color.set(kind === 'forward' ? COLORS.forward : COLORS.backward)
+
+      if (pooled.mesh.parent !== this.networkGroup) {
+        this.networkGroup?.add(pooled.mesh)
+      }
+
+      return pooled
+    }
+
+    const material = new THREE.MeshBasicMaterial({
+      color: kind === 'forward' ? COLORS.forward : COLORS.backward,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(this.sharedTrainingBurstGeometry, material)
+    this.networkGroup.add(mesh)
+
+    return { mesh, material }
+  }
+
+  releaseTrainingBurst(burst) {
     burst.mesh.parent?.remove(burst.mesh)
-    burst.mesh.geometry.dispose()
+    burst.mesh.visible = false
+    burst.material.opacity = 0
+
+    if (this.trainingBurstPool.length < 160) {
+      this.trainingBurstPool.push({
+        mesh: burst.mesh,
+        material: burst.material,
+      })
+      return
+    }
+
     burst.material.dispose()
   }
 
   clearTrainingBursts() {
     this.trainingBursts.forEach((burst) => {
-      this.disposeTrainingBurst(burst)
+      this.releaseTrainingBurst(burst)
     })
     this.trainingBursts = []
   }
@@ -2433,7 +2708,7 @@ export class NeuralRoomController {
     if (this.trainingBursts.length > 120) {
       const staleBursts = this.trainingBursts.splice(0, this.trainingBursts.length - 120)
       staleBursts.forEach((burst) => {
-        this.disposeTrainingBurst(burst)
+        this.releaseTrainingBurst(burst)
       })
     }
 
@@ -2517,6 +2792,7 @@ export class NeuralRoomController {
     this.registerListener(document, 'keydown', this.handleKeyDown)
     this.registerListener(document, 'keyup', this.handleKeyUp)
     this.registerListener(document, 'pointerlockchange', this.handlePointerLockChange)
+    this.registerListener(document, 'visibilitychange', this.handleVisibilityChange)
     this.registerListener(document, 'mousemove', this.handleMouseMove)
     this.registerListener(window, 'resize', this.handleResize)
     this.registerListener(this.renderer.domElement, 'click', this.handleCanvasClick)
@@ -2552,11 +2828,24 @@ export class NeuralRoomController {
       return
     }
 
-    this.camera.aspect = window.innerWidth / window.innerHeight
+    this.measureViewport()
+    this.camera.aspect = this.viewportSize.x / this.viewportSize.y
     this.camera.updateProjectionMatrix()
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.composer?.setSize(window.innerWidth, window.innerHeight)
-    this.bloomPass?.setSize?.(window.innerWidth, window.innerHeight)
+    this.applyRendererQuality(true)
+    this.renderFrame()
+  }
+
+  handleVisibilityChange() {
+    if (document.hidden) {
+      this.stopAnimationLoop()
+      return
+    }
+
+    this.handleResize()
+
+    if (!this.entryVisible) {
+      this.startAnimationLoop()
+    }
   }
 
   handleKeyDown(event) {
@@ -2688,6 +2977,7 @@ export class NeuralRoomController {
     }
 
     this.startGuidedTour()
+    this.startAnimationLoop()
   }
 
   toggleAutoTrain() {
@@ -2699,6 +2989,10 @@ export class NeuralRoomController {
     this.autoTrainElapsed = 0
     this.syncStatusMode()
     this.emitState()
+
+    if (this.autoTrain) {
+      this.startAnimationLoop()
+    }
   }
 
   setAutoTrainSpeed(value) {
@@ -2784,8 +3078,11 @@ export class NeuralRoomController {
 
       neuron.material.color.setHSL(0.58, 0.75, brightness)
       neuron.material.emissive.setHSL(0.58, 0.9, 0.07 + neuron.activation * 0.22)
-      neuron.light.intensity = 0.6 + neuron.activation * 0.9
-      neuron.light.color.set(COLORS.nodeLight)
+
+      if (neuron.light) {
+        neuron.light.intensity = 0.6 + neuron.activation * 0.9
+        neuron.light.color.set(COLORS.nodeLight)
+      }
     })
 
     if (this.selectedNeuron) {
@@ -2876,15 +3173,21 @@ export class NeuralRoomController {
   applySelectionHighlight(neuron) {
     neuron.selected = true
     neuron.material.emissive.setHSL(0.58, 1, 0.4)
-    neuron.light.intensity = 3
-    neuron.light.color.set(COLORS.selected)
+
+    if (neuron.light) {
+      neuron.light.intensity = 3
+      neuron.light.color.set(COLORS.selected)
+    }
   }
 
   removeSelectionHighlight(neuron) {
     neuron.selected = false
     neuron.material.emissive.setHSL(0.58, 0.9, 0.07 + neuron.activation * 0.22)
-    neuron.light.intensity = 0.6 + neuron.activation * 0.9
-    neuron.light.color.set(COLORS.nodeLight)
+
+    if (neuron.light) {
+      neuron.light.intensity = 0.6 + neuron.activation * 0.9
+      neuron.light.color.set(COLORS.nodeLight)
+    }
   }
 
   buildSelectedNeuronData() {
@@ -3036,21 +3339,24 @@ export class NeuralRoomController {
           this.backwardSignalColor,
           Math.min(0.72, neuron.backwardFlash * 0.58),
         )
-        neuron.light.intensity =
-          0.6 +
-          neuron.activation * 0.9 +
-          Math.sin(this.tick * 1.5 + neuron.index) * 0.12 +
-          neuron.forwardFlash * 1.8 +
-          neuron.backwardFlash * 2.2
-        neuron.light.color.set(COLORS.nodeLight)
-        neuron.light.color.lerp(
-          this.forwardSignalColor,
-          Math.min(0.7, neuron.forwardFlash * 0.5),
-        )
-        neuron.light.color.lerp(
-          this.backwardSignalColor,
-          Math.min(0.8, neuron.backwardFlash * 0.58),
-        )
+
+        if (neuron.light) {
+          neuron.light.intensity =
+            0.6 +
+            neuron.activation * 0.9 +
+            Math.sin(this.tick * 1.5 + neuron.index) * 0.12 +
+            neuron.forwardFlash * 1.8 +
+            neuron.backwardFlash * 2.2
+          neuron.light.color.set(COLORS.nodeLight)
+          neuron.light.color.lerp(
+            this.forwardSignalColor,
+            Math.min(0.7, neuron.forwardFlash * 0.5),
+          )
+          neuron.light.color.lerp(
+            this.backwardSignalColor,
+            Math.min(0.8, neuron.backwardFlash * 0.58),
+          )
+        }
       }
 
       neuron.mesh.scale.setScalar(
@@ -3067,19 +3373,24 @@ export class NeuralRoomController {
     return 0.003 + sourceActivation * 0.006 + Math.abs(connection.weight) * 0.003
   }
 
-  animatePulses() {
+  animatePulses(delta) {
+    const speedScale = delta / 0.016
+
     this.connections.forEach((connection) => {
       const speed = this.getPulseSpeed(connection)
       const absoluteWeight = Math.abs(connection.weight)
 
       connection.pulses.forEach((pulse) => {
-        pulse.t = (pulse.t + speed) % 1
+        pulse.t = (pulse.t + speed * speedScale) % 1
 
         const halfLength = 0.028
         const startT = Math.max(0.001, pulse.t - halfLength)
         const endT = Math.min(0.999, pulse.t + halfLength)
-        const positionA = connection.curve.getPoint(startT)
-        const positionB = connection.curve.getPoint(endT)
+        const positionA = this.tempPointA
+        const positionB = this.tempPointB
+
+        sampleCurveLut(connection.curveLut, startT, positionA)
+        sampleCurveLut(connection.curveLut, endT, positionB)
 
         pulse.mesh.position.set(
           (positionA.x + positionB.x) / 2,
@@ -3122,19 +3433,21 @@ export class NeuralRoomController {
     })
   }
 
-  animateTrainingBursts() {
+  animateTrainingBursts(delta) {
     if (this.trainingBursts.length === 0) {
       return
     }
 
+    const speedScale = delta / 0.016
+
     this.trainingBursts = this.trainingBursts.filter((burst) => {
       if (burst.delay > 0) {
-        burst.delay -= 0.016
+        burst.delay -= delta
         return true
       }
 
       burst.mesh.visible = true
-      burst.progress += burst.speed * burst.direction
+      burst.progress += burst.speed * burst.direction * speedScale
       burst.connection[burst.kind === 'forward' ? 'forwardFlash' : 'backwardFlash'] = Math.max(
         burst.connection[burst.kind === 'forward' ? 'forwardFlash' : 'backwardFlash'],
         burst.intensity * 0.42,
@@ -3155,16 +3468,19 @@ export class NeuralRoomController {
       }
 
       if (burst.progress <= 0 || burst.progress >= 1) {
-        this.disposeTrainingBurst(burst)
+        this.releaseTrainingBurst(burst)
         return false
       }
 
       const halfLength = 0.04 + burst.intensity * 0.02
       const startT = clamp(burst.progress - halfLength, 0.001, 0.999)
       const endT = clamp(burst.progress + halfLength, 0.001, 0.999)
-      const positionA = burst.connection.curve.getPoint(startT)
-      const positionB = burst.connection.curve.getPoint(endT)
+      const positionA = this.tempPointA
+      const positionB = this.tempPointB
       const fade = Math.sin(Math.min(1, burst.progress) * Math.PI)
+
+      sampleCurveLut(burst.connection.curveLut, startT, positionA)
+      sampleCurveLut(burst.connection.curveLut, endT, positionB)
 
       burst.mesh.position.set(
         (positionA.x + positionB.x) / 2,
@@ -3175,7 +3491,7 @@ export class NeuralRoomController {
       this.tempTangent.subVectors(positionB, positionA).normalize()
       this.tempQuaternion.setFromUnitVectors(this.tempUp, this.tempTangent)
       burst.mesh.quaternion.copy(this.tempQuaternion)
-      burst.mesh.scale.set(1, positionA.distanceTo(positionB) / 0.5, 1)
+      burst.mesh.scale.set(0.055 + burst.intensity * 0.11, positionA.distanceTo(positionB) / 0.5, 0.04 + burst.intensity * 0.09)
       burst.material.opacity = (0.32 + burst.intensity * 0.58) * fade
 
       return true
@@ -3202,14 +3518,9 @@ export class NeuralRoomController {
     })
   }
 
-  animateLabEnvironment() {
+  animateLabEnvironment(delta) {
     const energy = Math.min(1, this.trainingBursts.length / 18)
     const snapshot = this.engine.getCurrentSnapshot()
-    const outputs = this.engine.getDatasetPredictions().map((prediction) => ({
-      label: formatSampleLabel(prediction.input, prediction.target),
-      value: formatPredictionValue(prediction.prediction),
-      correct: isPredictionAligned(prediction.prediction, prediction.target),
-    }))
 
     this.labAccentMaterials.forEach((accent) => {
       accent.material.emissiveIntensity =
@@ -3290,9 +3601,19 @@ export class NeuralRoomController {
       this.heroSpotlight.angle = 0.4 + Math.sin(this.tick * 0.25) * 0.02
     }
 
-    const panelRefreshInterval = this.tourActive ? 10 : 6
+    this.panelRefreshElapsed += delta
 
-    if (this.frameCount % panelRefreshInterval === 0) {
+    const panelRefreshInterval = this.tourActive
+      ? 1 / 5
+      : 1 / this.quality.panelRefreshHz
+
+    if (this.panelRefreshElapsed >= panelRefreshInterval) {
+      const outputs = this.engine.getDatasetPredictions().map((prediction) => ({
+        label: formatSampleLabel(prediction.input, prediction.target),
+        value: formatPredictionValue(prediction.prediction),
+        correct: isPredictionAligned(prediction.prediction, prediction.target),
+      }))
+
       this.displayPanels.forEach((panel, index) => {
         renderDisplayPanelTexture(panel, {
           tick: this.tick + index * 0.45,
@@ -3302,11 +3623,17 @@ export class NeuralRoomController {
           activity: energy + (panel.mode === 'hero' ? 0.14 : 0),
         })
       })
+
+      this.panelRefreshElapsed = 0
     }
 
   }
 
   animate(now = performance.now()) {
+    if (!this.animationActive) {
+      return
+    }
+
     this.animationFrameId = requestAnimationFrame(this.animate)
     if (!this.lastFrameTime) {
       this.lastFrameTime = now
@@ -3321,16 +3648,39 @@ export class NeuralRoomController {
     this.applyMovement()
     this.updateCamera(delta)
     this.animateNodes()
-    this.animatePulses()
+    this.animatePulses(delta)
     this.animateConnectionBases()
-    this.animateTrainingBursts()
+    this.animateTrainingBursts(delta)
     this.animateDecisionSurface()
-    this.animateLabEnvironment()
+    this.animateLabEnvironment(delta)
 
     if (this.bloomPass) {
       const tourBloomCap = this.tourActive ? 0.07 : 0.12
-      const targetStrength = 0.2 + Math.min(tourBloomCap, this.trainingBursts.length * 0.006)
+      const targetStrength =
+        (0.2 + Math.min(tourBloomCap, this.trainingBursts.length * 0.006)) *
+        this.quality.bloomStrengthScale *
+        this.dynamicBloomScale
       this.bloomPass.strength = lerp(this.bloomPass.strength, targetStrength, 0.08)
+    }
+
+    this.performanceElapsed += delta
+    this.performanceFrameCount += 1
+
+    if (this.performanceElapsed >= 0.75) {
+      const averageFrameMs = (this.performanceElapsed / this.performanceFrameCount) * 1000
+
+      if (averageFrameMs > 23) {
+        this.dynamicPixelRatioScale = clamp(this.dynamicPixelRatioScale - 0.08, 0.7, 1)
+        this.dynamicBloomScale = clamp(this.dynamicBloomScale - 0.08, 0.45, 1)
+        this.applyRendererQuality()
+      } else if (averageFrameMs < 15) {
+        this.dynamicPixelRatioScale = clamp(this.dynamicPixelRatioScale + 0.04, 0.7, 1)
+        this.dynamicBloomScale = clamp(this.dynamicBloomScale + 0.04, 0.45, 1)
+        this.applyRendererQuality()
+      }
+
+      this.performanceElapsed = 0
+      this.performanceFrameCount = 0
     }
 
     if (this.autoTrain) {
@@ -3347,12 +3697,7 @@ export class NeuralRoomController {
       }
     }
 
-    if (this.composer) {
-      this.composer.render()
-      return
-    }
-
-    this.renderer.render(this.scene, this.camera)
+    this.renderFrame()
   }
 
   disposeScene() {
@@ -3378,7 +3723,7 @@ export class NeuralRoomController {
     }
 
     this.weightSprites.forEach((spriteRecord) => {
-      spriteRecord.texture.dispose?.()
+      this.releaseWeightTexture(spriteRecord.textureKey)
       spriteRecord.material.dispose?.()
     })
 
@@ -3390,7 +3735,19 @@ export class NeuralRoomController {
     this.renderer?.dispose?.()
     this.composer?.dispose?.()
     this.sharedPulseGeometry?.dispose?.()
+    this.sharedTrainingBurstGeometry?.dispose?.()
     this.sharedPulseGeometry = null
+    this.sharedTrainingBurstGeometry = null
+
+    this.trainingBurstPool.forEach((burst) => {
+      burst.material.dispose?.()
+    })
+    this.trainingBurstPool = []
+
+    this.weightTextureCache.forEach((textureRecord) => {
+      textureRecord.texture.dispose?.()
+    })
+    this.weightTextureCache.clear()
 
     if (this.renderer?.domElement?.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement)
