@@ -9,6 +9,8 @@ import TrainingPanel from './components/TrainingPanel.jsx'
 import { buildModelConfig, createDefaultModelConfig } from './neural-room/model-config.js'
 import { createInitialViewState } from './neural-room/view-state.js'
 
+const LOADER_MIN_DURATION_MS = 1000
+
 function App() {
   const viewportRef = useRef(null)
   const controllerRef = useRef(null)
@@ -16,6 +18,17 @@ function App() {
   const [initialModelConfig] = useState(() => createDefaultModelConfig())
   const [viewState, setViewState] = useState(() => createInitialViewState(initialModelConfig))
   const [sceneReady, setSceneReady] = useState(false)
+  const [minLoaderElapsed, setMinLoaderElapsed] = useState(false)
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      setMinLoaderElapsed(true)
+    }, LOADER_MIN_DURATION_MS)
+
+    return () => {
+      window.clearTimeout(timerId)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -66,6 +79,8 @@ function App() {
   }, [initialModelConfig])
 
   const controller = controllerRef.current
+  const loaderVisible = !sceneReady || !minLoaderElapsed
+
   const handleEnter = ({ layers, input, target }) => {
     const modelConfig = buildModelConfig({ layers, input, target })
 
@@ -80,10 +95,20 @@ function App() {
   return (
     <div className="app-shell">
       <div id="scene-root" ref={viewportRef} aria-hidden="true" />
-      <div className={`scene-loader ${sceneReady ? 'hidden' : ''}`}>
+      <div className={`scene-loader ${loaderVisible ? '' : 'hidden'}`}>
         <div className="scene-loader-chip">Optimizando escena</div>
+        <div className="scene-loader-core" aria-hidden="true">
+          <div className="scene-loader-ring scene-loader-ring-outer" />
+          <div className="scene-loader-ring scene-loader-ring-mid" />
+          <div className="scene-loader-ring scene-loader-ring-inner" />
+          <div className="scene-loader-pulse" />
+        </div>
         <h2>Neural Room</h2>
         <p>Preparando shaders, buffers y postproceso para que la entrada sea mas fluida.</p>
+        <div className="scene-loader-progress" aria-hidden="true">
+          <div className="scene-loader-progress-fill" />
+        </div>
+        <div className="scene-loader-status">Sincronizando sistema neuronal</div>
       </div>
 
       <TopBar
@@ -120,7 +145,7 @@ function App() {
         </div>
       )}
 
-      {viewState.entryVisible ? (
+      {viewState.entryVisible && !loaderVisible ? (
         <EntryOverlay
           initialConfig={initialModelConfig}
           onEnter={handleEnter}
