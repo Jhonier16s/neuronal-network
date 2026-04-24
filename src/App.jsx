@@ -7,14 +7,12 @@ import PointerLockPrompt from './components/PointerLockPrompt.jsx'
 import TopBar from './components/TopBar.jsx'
 import TrainingPanel from './components/TrainingPanel.jsx'
 import { buildModelConfig, createDefaultModelConfig } from './neural-room/model-config.js'
-import {
-  NeuralRoomController,
-  createInitialViewState,
-} from './neural-room/controller.js'
+import { createInitialViewState } from './neural-room/view-state.js'
 
 function App() {
   const viewportRef = useRef(null)
   const controllerRef = useRef(null)
+  const queuedEnterConfigRef = useRef(null)
   const [initialModelConfig] = useState(() => createDefaultModelConfig())
   const [viewState, setViewState] = useState(() => createInitialViewState(initialModelConfig))
   const [sceneReady, setSceneReady] = useState(false)
@@ -22,22 +20,33 @@ function App() {
   useEffect(() => {
     let cancelled = false
 
-    const controller = new NeuralRoomController({
-      modelConfig: initialModelConfig,
-      onStateChange: (nextState) => {
-        setViewState(nextState)
-      },
-    })
-
-    controllerRef.current = controller
     setSceneReady(false)
 
-    Promise.resolve()
-      .then(() =>
-        controller.mount({
+    import('./neural-room/controller.js')
+      .then(({ NeuralRoomController }) => {
+        if (cancelled) {
+          return null
+        }
+
+        const controller = new NeuralRoomController({
+          modelConfig: initialModelConfig,
+          onStateChange: (nextState) => {
+            setViewState(nextState)
+          },
+        })
+
+        controllerRef.current = controller
+
+        return controller.mount({
           viewportEl: viewportRef.current,
-        }),
-      )
+        }).then(() => controller)
+      })
+      .then((controller) => {
+        if (controller && queuedEnterConfigRef.current) {
+          controller.enterScene(queuedEnterConfigRef.current)
+          queuedEnterConfigRef.current = null
+        }
+      })
       .then(() => {
         if (!cancelled) {
           setSceneReady(true)
@@ -51,12 +60,22 @@ function App() {
 
     return () => {
       cancelled = true
-      controller.unmount()
+      controllerRef.current?.unmount()
       controllerRef.current = null
     }
   }, [initialModelConfig])
 
   const controller = controllerRef.current
+  const handleEnter = ({ layers, input, target }) => {
+    const modelConfig = buildModelConfig({ layers, input, target })
+
+    if (controller) {
+      controller.enterScene(modelConfig)
+      return
+    }
+
+    queuedEnterConfigRef.current = modelConfig
+  }
 
   return (
     <div className="app-shell">
@@ -104,9 +123,7 @@ function App() {
       {viewState.entryVisible ? (
         <EntryOverlay
           initialConfig={initialModelConfig}
-          onEnter={({ layers, input, target }) =>
-            controller?.enterScene(buildModelConfig({ layers, input, target }))
-          }
+          onEnter={handleEnter}
         />
       ) : null}
     </div>
