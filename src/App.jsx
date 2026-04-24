@@ -6,6 +6,7 @@ import NeuronInspector from './components/NeuronInspector.jsx'
 import PointerLockPrompt from './components/PointerLockPrompt.jsx'
 import TopBar from './components/TopBar.jsx'
 import TrainingPanel from './components/TrainingPanel.jsx'
+import { buildModelConfig, createDefaultModelConfig } from './neural-room/model-config.js'
 import {
   NeuralRoomController,
   createInitialViewState,
@@ -14,10 +15,12 @@ import {
 function App() {
   const viewportRef = useRef(null)
   const controllerRef = useRef(null)
-  const [viewState, setViewState] = useState(() => createInitialViewState())
+  const [initialModelConfig] = useState(() => createDefaultModelConfig())
+  const [viewState, setViewState] = useState(() => createInitialViewState(initialModelConfig))
 
   useEffect(() => {
     const controller = new NeuralRoomController({
+      modelConfig: initialModelConfig,
       onStateChange: (nextState) => {
         setViewState(nextState)
       },
@@ -32,7 +35,7 @@ function App() {
       controller.unmount()
       controllerRef.current = null
     }
-  }, [])
+  }, [initialModelConfig])
 
   const controller = controllerRef.current
 
@@ -44,6 +47,7 @@ function App() {
         architectureLabel={viewState.architectureLabel}
         connectionCount={viewState.connectionCount}
         epoch={viewState.epoch}
+        hintActive={!viewState.pointerLocked && !viewState.cinematicActive}
         mouseLabel={viewState.mouseLabel}
       />
 
@@ -60,20 +64,26 @@ function App() {
       <TrainingPanel
         training={viewState.training}
         cinematicActive={viewState.cinematicActive}
-        onStepBack={() => controller?.stepBack()}
+        onBackward={() => controller?.stepBackward()}
+        onAutoSpeedChange={(value) => controller?.setAutoTrainSpeed(value)}
         onReset={() => controller?.resetTraining()}
-        onStepForward={() => controller?.stepForward()}
-        onStepEpochForward={() => controller?.stepEpochForward()}
+        onForward={() => controller?.stepForward()}
+        onToggleAuto={() => controller?.toggleAutoTrain()}
       />
 
       {viewState.cinematicActive ? null : (
         <div id="arrow-hint">
-          <b>&larr; &rarr;</b> navegar pasos · <b>ESPACIO</b> auto-entrenar
+          <b>&rarr;</b> forward · <b>&larr;</b> backward · <b>ESPACIO</b> auto
         </div>
       )}
 
       {viewState.entryVisible ? (
-        <EntryOverlay onEnter={() => controller?.enterScene()} />
+        <EntryOverlay
+          initialConfig={initialModelConfig}
+          onEnter={({ layers, input, target }) =>
+            controller?.enterScene(buildModelConfig({ layers, input, target }))
+          }
+        />
       ) : null}
     </div>
   )

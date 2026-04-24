@@ -1,9 +1,12 @@
-function TopBar({ architectureLabel, connectionCount, epoch, mouseLabel }) {
+function TopBar({ architectureLabel, connectionCount, epoch, mouseLabel, hintActive }) {
   return (
     <div id="top-bar">
       <div id="ttl">
         <h1>AI Training Chamber</h1>
-        <p>{mouseLabel}</p>
+        <p className={hintActive ? 'hint-pulse' : ''}>
+          {hintActive ? <span className="hint-dot" aria-hidden="true" /> : null}
+          {mouseLabel}
+        </p>
       </div>
 
       <div id="stats">

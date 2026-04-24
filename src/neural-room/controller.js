@@ -3,25 +3,19 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import {
-  ARCHITECTURE_LABEL,
   CAMERA_DEFAULT,
   CAMERA_ENTRY,
   COLORS,
   DASH_COUNT,
   DASH_GAP,
-  DECISION_SURFACE_RESOLUTION,
-  LAYERS,
-  LAYER_FUNCTIONS,
-  LAYER_NAMES,
   LAYER_SPACING,
   LEARNING_RATE,
   MOVE_SPEED,
   NODE_SPACING,
   ROOM_DIMENSIONS,
-  TOTAL_CONNECTIONS,
-  TRAINING_DATA,
 } from './constants.js'
 import { NeuralNetworkEngine } from './engine.js'
+import { createDefaultModelConfig } from './model-config.js'
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
@@ -72,16 +66,28 @@ function getActivationTone(value) {
   return 'm'
 }
 
+function formatNumber(value, digits = 2) {
+  return String(Number(value.toFixed(digits)))
+}
+
+function formatVector(values, digits = 2) {
+  return `[${values.map((value) => formatNumber(value, digits)).join(', ')}]`
+}
+
 function formatSampleLabel(input, target) {
-  return `${input[0]},${input[1]} → ${target[0]}`
+  return `${formatVector(input)} -> ${formatVector(target)}`
 }
 
 function isPredictionAligned(prediction, target) {
-  return Math.abs(prediction - target[0]) < 0.05
+  return prediction.every((value, index) => Math.abs(value - target[index]) < 0.05)
 }
 
-function createPlaceholderOutputs() {
-  return TRAINING_DATA.map(({ input, target }) => ({
+function formatPredictionValue(prediction) {
+  return formatVector(prediction)
+}
+
+function createPlaceholderOutputs(trainingData) {
+  return trainingData.map(({ input, target }) => ({
     label: formatSampleLabel(input, target),
     value: '—',
     correct: null,
@@ -92,12 +98,12 @@ function getStatusMeta(statusMode) {
   switch (statusMode) {
     case 'auto':
       return { text: 'Auto ▶', tone: 'ok' }
-    case 'paused':
-      return { text: 'Pausado', tone: '' }
-    case 'converged':
-      return { text: 'Modelo Excel listo', tone: 'good' }
+    case 'forward':
+      return { text: 'Forward en progreso', tone: 'ok' }
+    case 'backward':
+      return { text: 'Backward en progreso', tone: 'ok' }
     default:
-      return { text: 'Listo', tone: '' }
+      return { text: 'Listo para forward', tone: '' }
   }
 }
 
@@ -380,10 +386,10 @@ function renderDisplayPanelTexture(panel, { tick, loss, epoch, outputs, activity
   panel.texture.needsUpdate = true
 }
 
-export function createInitialViewState() {
+export function createInitialViewState(modelConfig = createDefaultModelConfig()) {
   return {
-    architectureLabel: ARCHITECTURE_LABEL,
-    connectionCount: TOTAL_CONNECTIONS,
+    architectureLabel: modelConfig.architectureLabel,
+    connectionCount: modelConfig.connectionCount,
     epoch: 0,
     entryVisible: true,
     mode3D: true,
@@ -401,23 +407,37 @@ export function createInitialViewState() {
       statusTone: '',
       stepPosition: '0 / 0',
       sampleText: '—',
-      visualText: 'Forward batch + backprop batch + visual 3D',
-      outputs: createPlaceholderOutputs(),
+      phaseText: 'Esperando forward',
+      visualText: 'Forward + backprop + visual 3D',
+      outputs: createPlaceholderOutputs(modelConfig.trainingData),
       losses: [0],
       currentLossIndex: 0,
+      canForward: true,
+      canBackward: false,
+      autoActive: false,
+      autoSpeed: 1.5,
     },
   }
 }
 
 export class NeuralRoomController {
-  constructor({ onStateChange }) {
+  constructor({ onStateChange, modelConfig = createDefaultModelConfig() }) {
     this.onStateChange = onStateChange
-    this.engine = new NeuralNetworkEngine()
+    this.modelConfig = modelConfig
+    this.layers = []
+    this.layerNames = []
+    this.layerFunctions = []
+    this.architectureLabel = ''
+    this.connectionCount = 0
+    this.trainingData = []
+    this.engine = null
     this.entryVisible = true
     this.mode3D = true
     this.pointerLocked = false
     this.statusMode = 'ready'
     this.autoTrain = false
+    this.autoTrainSpeed = 1.5
+    this.autoTrainElapsed = 0
     this.viewportEl = null
     this.scene = null
     this.camera = null
@@ -472,7 +492,9 @@ export class NeuralRoomController {
     this.sharedPulseGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1)
     this.forwardSignalColor = new THREE.Color(COLORS.forward)
     this.backwardSignalColor = new THREE.Color(COLORS.backward)
-    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
+    this.trainingCueText = 'Forward + backprop + actualizacion de pesos'
+
+    this.applyModelConfig(modelConfig, { rebuildScene: false, emitState: false })
 
     this.animate = this.animate.bind(this)
     this.handleResize = this.handleResize.bind(this)
@@ -482,6 +504,65 @@ export class NeuralRoomController {
     this.handlePointerLockChange = this.handlePointerLockChange.bind(this)
     this.handleMouseMove = this.handleMouseMove.bind(this)
     this.handleWheel = this.handleWheel.bind(this)
+  }
+
+  applyModelConfig(modelConfig, { rebuildScene = true, emitState = true } = {}) {
+    this.modelConfig = modelConfig
+    this.layers = modelConfig.layers.slice()
+    this.layerNames = modelConfig.layerNames.slice()
+    this.layerFunctions = modelConfig.layerFunctions.slice()
+    this.architectureLabel = modelConfig.architectureLabel
+    this.connectionCount = modelConfig.connectionCount
+    this.trainingData = modelConfig.trainingData.map(({ input, target }) => ({
+      input: input.slice(),
+      target: target.slice(),
+    }))
+    this.engine = new NeuralNetworkEngine(modelConfig)
+    this.autoTrain = false
+    this.autoTrainElapsed = 0
+    this.statusMode = 'ready'
+    this.trainingCueText = 'Forward + backprop + actualizacion de pesos'
+
+    if (rebuildScene && this.scene) {
+      this.clearSelection()
+      this.resetNetworkVisuals()
+      this.applyCurrentModelToScene()
+    }
+
+    if (emitState) {
+      this.emitState()
+    }
+  }
+
+  resetNetworkVisuals() {
+    this.clearTrainingBursts()
+
+    if (this.networkGroup) {
+      this.networkGroup.traverse((object) => {
+        object.geometry?.dispose?.()
+
+        if (object.material) {
+          const materials = Array.isArray(object.material) ? object.material : [object.material]
+
+          materials.forEach((material) => {
+            material.map?.dispose?.()
+            material.dispose?.()
+          })
+        }
+      })
+
+      this.scene?.remove(this.networkGroup)
+    }
+
+    this.networkGroup = new THREE.Group()
+    this.scene?.add(this.networkGroup)
+    this.neurons = []
+    this.neuronMap = []
+    this.nodePointMap = []
+    this.connections = []
+    this.weightSprites = []
+    this.layerSprites = []
+    this.buildNetworkObjects()
   }
 
   mount({ viewportEl }) {
@@ -1195,7 +1276,7 @@ export class NeuralRoomController {
       tick: 0,
       loss: 0.5,
       epoch: 0,
-      outputs: createPlaceholderOutputs(),
+      outputs: createPlaceholderOutputs(this.trainingData),
       activity: mode === 'hero' ? 0.2 : 0.12,
     })
   }
@@ -1238,7 +1319,7 @@ export class NeuralRoomController {
       Math.PI / 2,
       'Perceptron',
       '1958 - Rosenblatt',
-      ['Learnable linear classifier', 'Weights adapt from data', 'Limits exposed by XOR'],
+      ['Learnable linear classifier', 'Weights adapt from data', 'Simple trainable baseline'],
       '#a9e7ff',
     )
     this.createReferencePanel(
@@ -1256,9 +1337,9 @@ export class NeuralRoomController {
       5.4,
       9.5,
       -Math.PI / 2,
-      'XOR Chamber',
+      'Training Chamber',
       'Current experiment',
-      ['Non linear separability', 'Hidden layers required', 'Decision field below'],
+      ['Configurable architecture', 'Custom input and target', 'Interactive training below'],
       '#ffd89c',
     )
 
@@ -1269,7 +1350,7 @@ export class NeuralRoomController {
       Math.PI,
       'Neural Research Cube',
       'Interactive observation bay',
-      ['Forward signal and backprop', 'Live XOR decision surface', 'Walk inside the model'],
+      ['Forward signal and backprop', 'Live model activity', 'Walk inside the network'],
       '#8ef0ff',
       7.4,
       3.4,
@@ -1357,7 +1438,7 @@ export class NeuralRoomController {
     })
   }
 
-  createServerRack(px, py, pz, ry, materials, label) {
+  createServerRack(px, py, pz, ry, materials) {
     this.createBox(2.2, 7.8, 4.3, materials.console, px, py, pz, 0, ry, 0)
     this.createBox(2.4, 0.2, 4.5, materials.trim, px, py + 4, pz, 0, ry, 0)
     this.createBox(2.4, 0.2, 4.5, materials.trim, px, py - 4, pz, 0, ry, 0)
@@ -1744,7 +1825,7 @@ export class NeuralRoomController {
     )
   }
 
-  createConsoleStack(px, py, pz, ry, materials, title, subtitle) {
+  createConsoleStack(px, py, pz, ry, materials) {
     this.createBox(1.2, 4.8, 3.8, materials.console, px, py, pz, 0, ry, 0)
     this.createBox(1.5, 0.18, 4.15, materials.trim, px, py + 2.48, pz, 0, ry, 0)
     this.createBox(1.5, 0.18, 4.15, materials.trim, px, py - 2.48, pz, 0, ry, 0)
@@ -1950,7 +2031,7 @@ export class NeuralRoomController {
     this.tourShotIndex = 0
     this.tourShotTime = 0
     this.tourLabel = ''
-    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
+    this.trainingCueText = 'Forward + backprop + actualizacion de pesos'
     this.emitState()
   }
 
@@ -1986,9 +2067,11 @@ export class NeuralRoomController {
   }
 
   getNeuronPosition(layerIndex, neuronIndex) {
+    const layers = this.layers
+
     return new THREE.Vector3(
-      layerIndex * LAYER_SPACING - ((LAYERS.length - 1) * LAYER_SPACING) / 2,
-      (neuronIndex - (LAYERS[layerIndex] - 1) / 2) * NODE_SPACING,
+      layerIndex * LAYER_SPACING - ((layers.length - 1) * LAYER_SPACING) / 2,
+      (neuronIndex - (layers[layerIndex] - 1) / 2) * NODE_SPACING,
       0,
     )
   }
@@ -2003,11 +2086,11 @@ export class NeuralRoomController {
 
     const sphereGeometry = new THREE.SphereGeometry(0.84, 40, 40)
 
-    for (let layerIndex = 0; layerIndex < LAYERS.length; layerIndex += 1) {
+    for (let layerIndex = 0; layerIndex < this.layers.length; layerIndex += 1) {
       this.neuronMap.push([])
       this.nodePointMap.push([])
 
-      for (let neuronIndex = 0; neuronIndex < LAYERS[layerIndex]; neuronIndex += 1) {
+      for (let neuronIndex = 0; neuronIndex < this.layers[layerIndex]; neuronIndex += 1) {
         const position = this.getNeuronPosition(layerIndex, neuronIndex)
         const activation = this.engine.activations[layerIndex][neuronIndex]
         const material = new THREE.MeshStandardMaterial({
@@ -2043,9 +2126,9 @@ export class NeuralRoomController {
       }
     }
 
-    for (let layerIndex = 0; layerIndex < LAYERS.length - 1; layerIndex += 1) {
-      for (let fromIndex = 0; fromIndex < LAYERS[layerIndex]; fromIndex += 1) {
-        for (let toIndex = 0; toIndex < LAYERS[layerIndex + 1]; toIndex += 1) {
+    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
+      for (let fromIndex = 0; fromIndex < this.layers[layerIndex]; fromIndex += 1) {
+        for (let toIndex = 0; toIndex < this.layers[layerIndex + 1]; toIndex += 1) {
           const weight = this.engine.weights[layerIndex][fromIndex][toIndex]
           const from = this.nodePointMap[layerIndex][fromIndex]
           const to = this.nodePointMap[layerIndex + 1][toIndex]
@@ -2094,15 +2177,15 @@ export class NeuralRoomController {
 
     const weightLabelData = []
 
-    for (let layerIndex = 0; layerIndex < LAYERS.length - 1; layerIndex += 1) {
-      for (let fromIndex = 0; fromIndex < LAYERS[layerIndex]; fromIndex += 1) {
-        for (let toIndex = 0; toIndex < LAYERS[layerIndex + 1]; toIndex += 1) {
+    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
+      for (let fromIndex = 0; fromIndex < this.layers[layerIndex]; fromIndex += 1) {
+        for (let toIndex = 0; toIndex < this.layers[layerIndex + 1]; toIndex += 1) {
           const weight = this.engine.weights[layerIndex][fromIndex][toIndex]
           const from = this.nodePointMap[layerIndex][fromIndex]
           const to = this.nodePointMap[layerIndex + 1][toIndex]
           const seed = layerIndex * 100 + fromIndex * 10 + toIndex
-          const totalInLayer = LAYERS[layerIndex] * LAYERS[layerIndex + 1]
-          const indexInLayer = fromIndex * LAYERS[layerIndex + 1] + toIndex
+          const totalInLayer = this.layers[layerIndex] * this.layers[layerIndex + 1]
+          const indexInLayer = fromIndex * this.layers[layerIndex + 1] + toIndex
           const tPosition = 0.22 + ((indexInLayer + 0.5) / totalInLayer) * 0.56
           const curve = this.makeCurve(from, to, seed)
           const point = curve.getPoint(tPosition)
@@ -2163,16 +2246,16 @@ export class NeuralRoomController {
       this.weightSprites.push(spriteRecord)
     })
 
-    for (let layerIndex = 0; layerIndex < LAYERS.length; layerIndex += 1) {
+    for (let layerIndex = 0; layerIndex < this.layers.length; layerIndex += 1) {
       const spriteRecord = this.createLayerLabelSprite(
-        LAYER_NAMES[layerIndex],
-        LAYER_FUNCTIONS[layerIndex],
+        this.layerNames[layerIndex],
+        this.layerFunctions[layerIndex],
       )
-      const x = layerIndex * LAYER_SPACING - ((LAYERS.length - 1) * LAYER_SPACING) / 2
+      const x = layerIndex * LAYER_SPACING - ((this.layers.length - 1) * LAYER_SPACING) / 2
 
         spriteRecord.sprite.position.set(
           x,
-          ((LAYERS[layerIndex] - 1) / 2) * NODE_SPACING + 1.35,
+          ((this.layers[layerIndex] - 1) / 2) * NODE_SPACING + 1.35,
           0,
         )
 
@@ -2343,7 +2426,9 @@ export class NeuralRoomController {
     }
 
     const { meta } = snapshot
-    const outputLayerIndex = LAYERS.length - 1
+    const outputLayerIndex = this.layers.length - 1
+    const phase = snapshot.phase ?? meta.phase
+    const activeLayer = meta.activeLayer ?? outputLayerIndex
 
     if (this.trainingBursts.length > 120) {
       const staleBursts = this.trainingBursts.splice(0, this.trainingBursts.length - 120)
@@ -2352,17 +2437,38 @@ export class NeuralRoomController {
       })
     }
 
-    this.trainingCueText = 'Forward batch + gradientes Excel + actualizacion de pesos'
+    this.trainingCueText =
+      phase === 'backward'
+        ? `Backward capa ${activeLayer}/${this.layers.length - 1}`
+        : `Forward capa ${activeLayer}/${this.layers.length - 1}`
 
-    meta.input.forEach((value, index) => {
-      this.flashNeuron(0, index, 'forward', 0.15 + value * 0.85)
-    })
+    if (phase === 'forward') {
+      meta.forward[activeLayer - 1]?.forEach((value, index) => {
+        this.flashNeuron(activeLayer - 1, index, 'forward', 0.15 + value * 0.85)
+      })
 
-    meta.gradients[outputLayerIndex].forEach((value, index) => {
-      this.flashNeuron(outputLayerIndex, index, 'backward', 0.18 + Math.abs(value) * 6)
-    })
+      meta.forward[activeLayer]?.forEach((value, index) => {
+        this.flashNeuron(activeLayer, index, 'forward', 0.18 + value * 0.82)
+      })
+    }
+
+    if (phase === 'backward') {
+      meta.gradients[activeLayer]?.forEach((value, index) => {
+        this.flashNeuron(activeLayer, index, 'backward', 0.18 + Math.abs(value) * 6)
+      })
+
+      meta.forward[activeLayer - 1]?.forEach((value, index) => {
+        this.flashNeuron(activeLayer - 1, index, 'backward', 0.12 + Math.abs(value) * 0.36)
+      })
+    }
 
     this.connections.forEach((connection) => {
+      const connectionMatchesLayer = connection.layer === activeLayer - 1
+
+      if (!connectionMatchesLayer) {
+        return
+      }
+
       const forwardActivation = meta.forward[connection.layer]?.[connection.fromIndex] ?? 0
       const backwardSignal = Math.abs(
         meta.gradients[connection.layer + 1]?.[connection.toIndex] ?? 0,
@@ -2381,24 +2487,29 @@ export class NeuralRoomController {
         1,
       )
 
-      this.createTrainingBurst(
-        connection,
-        'forward',
-        1,
-        connection.layer * 0.12 + ((connection.fromIndex + connection.toIndex) % 3) * 0.015,
-        forwardIntensity,
-      )
-      this.createTrainingBurst(
-        connection,
-        'backward',
-        -1,
-        0.34 +
-          (LAYERS.length - 2 - connection.layer) * 0.14 +
-          ((connection.fromIndex * 2 + connection.toIndex) % 3) * 0.018,
-        backwardIntensity,
-      )
-      connection.forwardFlash = Math.max(connection.forwardFlash, forwardIntensity * 0.25)
-      connection.backwardFlash = Math.max(connection.backwardFlash, backwardIntensity * 0.25)
+      if (phase === 'forward') {
+        this.createTrainingBurst(
+          connection,
+          'forward',
+          1,
+          connection.layer * 0.12 + ((connection.fromIndex + connection.toIndex) % 3) * 0.015,
+          forwardIntensity,
+        )
+        connection.forwardFlash = Math.max(connection.forwardFlash, forwardIntensity * 0.25)
+      }
+
+      if (phase === 'backward') {
+        this.createTrainingBurst(
+          connection,
+          'backward',
+          -1,
+          0.34 +
+            (this.layers.length - 2 - connection.layer) * 0.14 +
+            ((connection.fromIndex * 2 + connection.toIndex) % 3) * 0.018,
+          backwardIntensity,
+        )
+        connection.backwardFlash = Math.max(connection.backwardFlash, backwardIntensity * 0.25)
+      }
     })
   }
 
@@ -2455,13 +2566,13 @@ export class NeuralRoomController {
 
     if (event.code === 'ArrowRight') {
       event.preventDefault()
-      this.stepForwardNav()
+      this.stepForward()
       return
     }
 
     if (event.code === 'ArrowLeft') {
       event.preventDefault()
-      this.stepBack()
+      this.stepBackward()
       return
     }
 
@@ -2571,7 +2682,11 @@ export class NeuralRoomController {
     this.camZ = clamp(this.camZ, -depth / 2 + 1, depth / 2 - 1)
   }
 
-  enterScene() {
+  enterScene(modelConfig) {
+    if (modelConfig) {
+      this.applyModelConfig(modelConfig)
+    }
+
     this.startGuidedTour()
   }
 
@@ -2581,7 +2696,20 @@ export class NeuralRoomController {
     }
 
     this.autoTrain = !this.autoTrain
-    this.statusMode = this.autoTrain ? 'auto' : 'paused'
+    this.autoTrainElapsed = 0
+    this.syncStatusMode()
+    this.emitState()
+  }
+
+  setAutoTrainSpeed(value) {
+    const numericValue = Number(value)
+
+    if (Number.isNaN(numericValue)) {
+      return
+    }
+
+    this.autoTrainSpeed = clamp(numericValue, 0.25, 15)
+    this.autoTrainElapsed = 0
     this.emitState()
   }
 
@@ -2591,11 +2719,14 @@ export class NeuralRoomController {
     }
 
     this.autoTrain = false
+    this.autoTrainElapsed = 0
     this.statusMode = 'ready'
     this.clearTrainingBursts()
     this.clearSelection()
     this.engine.initialize()
+    this.trainingCueText = 'Forward + backprop + actualizacion de pesos'
     this.applyCurrentModelToScene()
+    this.syncStatusMode()
     this.emitState()
   }
 
@@ -2604,43 +2735,23 @@ export class NeuralRoomController {
       return
     }
 
-    const snapshot = this.engine.stepForward()
+    const snapshot = this.engine.runForward()
     this.syncStatusMode()
     this.applyCurrentModelToScene()
     this.playSnapshotCue(snapshot)
     this.emitState()
   }
 
-  stepBack() {
+  stepBackward() {
     if (this.tourActive) {
       return
     }
 
-    const snapshot = this.engine.stepBack()
-    this.syncStatusMode()
-    this.applyCurrentModelToScene()
-    this.playSnapshotCue(snapshot)
-    this.emitState()
-  }
-
-  stepForwardNav() {
-    if (this.tourActive) {
+    if (!this.engine.canStepBackward()) {
       return
     }
 
-    const snapshot = this.engine.stepForwardNav()
-    this.syncStatusMode()
-    this.applyCurrentModelToScene()
-    this.playSnapshotCue(snapshot)
-    this.emitState()
-  }
-
-  stepEpochForward() {
-    if (this.tourActive) {
-      return
-    }
-
-    const snapshot = this.engine.stepEpochForward()
+    const snapshot = this.engine.runBackward()
     this.syncStatusMode()
     this.applyCurrentModelToScene()
     this.playSnapshotCue(snapshot)
@@ -2660,9 +2771,7 @@ export class NeuralRoomController {
       return
     }
 
-    if (this.statusMode === 'converged' || this.statusMode === 'auto') {
-      this.statusMode = snapshot.step === 0 ? 'ready' : 'paused'
-    }
+    this.statusMode = this.engine.getPhase() === 'backward' ? 'backward' : this.engine.getPhase()
   }
 
   applyCurrentModelToScene() {
@@ -2688,9 +2797,9 @@ export class NeuralRoomController {
   rebuildConnections() {
     let connectionIndex = 0
 
-    for (let layerIndex = 0; layerIndex < LAYERS.length - 1; layerIndex += 1) {
-      for (let fromIndex = 0; fromIndex < LAYERS[layerIndex]; fromIndex += 1) {
-        for (let toIndex = 0; toIndex < LAYERS[layerIndex + 1]; toIndex += 1) {
+    for (let layerIndex = 0; layerIndex < this.layers.length - 1; layerIndex += 1) {
+      for (let fromIndex = 0; fromIndex < this.layers[layerIndex]; fromIndex += 1) {
+        for (let toIndex = 0; toIndex < this.layers[layerIndex + 1]; toIndex += 1) {
           const connection = this.connections[connectionIndex]
           const weight = this.engine.weights[layerIndex][fromIndex][toIndex]
           const absoluteWeight = Math.abs(weight)
@@ -2794,12 +2903,12 @@ export class NeuralRoomController {
     )
 
     return {
-      title: `${LAYER_NAMES[layer]} · N${index + 1}`,
-      layerName: LAYER_NAMES[layer],
+      title: `${this.layerNames[layer]} · N${index + 1}`,
+      layerName: this.layerNames[layer],
       index: index + 1,
       activation: activation.toFixed(4),
       activationTone: getActivationTone(activation),
-      functionName: LAYER_FUNCTIONS[layer],
+      functionName: this.layerFunctions[layer],
       incomingWeights,
       isInputLayer: layer === 0,
     }
@@ -2808,17 +2917,30 @@ export class NeuralRoomController {
   buildViewState() {
     const snapshot = this.engine.getCurrentSnapshot()
     const status = getStatusMeta(this.statusMode)
-    const currentSampleIndex = snapshot?.sampleIndex ?? 0
+    const currentPhase = this.engine.getPhase()
     const outputs = this.engine.getDatasetPredictions().map((prediction, index) => ({
       label: formatSampleLabel(prediction.input, prediction.target),
-      value: prediction.prediction.toFixed(2),
+      value: formatPredictionValue(prediction.prediction),
       correct: isPredictionAligned(prediction.prediction, prediction.target),
-      active: index === currentSampleIndex,
+      active: index === 0,
     }))
+    const totalLayerSteps = Math.max(this.layers.length - 1, 1)
+    const forwardLayerIndex = this.engine.getForwardLayerIndex()
+    const backwardLayerIndex = this.engine.getBackwardLayerIndex()
+    const losses =
+      this.engine.generatedEpochs.length > 0
+        ? this.engine.generatedEpochs.map((epochTrace) => epochTrace.averageLoss)
+        : [snapshot?.loss ?? 0]
+    const phaseText =
+      currentPhase === 'backward'
+        ? `Backward ${totalLayerSteps - backwardLayerIndex + 1}/${totalLayerSteps}`
+        : currentPhase === 'forward'
+          ? `Forward ${forwardLayerIndex}/${totalLayerSteps}`
+          : 'Esperando forward'
 
     return {
-      architectureLabel: ARCHITECTURE_LABEL,
-      connectionCount: TOTAL_CONNECTIONS,
+      architectureLabel: this.architectureLabel,
+      connectionCount: this.connectionCount,
       epoch: snapshot?.step ?? 0,
       entryVisible: this.entryVisible,
       mode3D: true,
@@ -2826,7 +2948,7 @@ export class NeuralRoomController {
       cinematicActive: this.tourActive,
       mouseLabel: this.tourActive
         ? 'Room tour automatico en curso'
-        : 'Clic para explorar · WASD · ESC para soltar',
+        : 'Haz clic para entrar y moverte por la chamber · WASD · ESC',
       infoVisible: Boolean(this.selectedNeuron),
       selectedNeuron: this.buildSelectedNeuronData(),
       training: {
@@ -2843,21 +2965,24 @@ export class NeuralRoomController {
         statusText: status.text,
         statusTone: status.tone,
         stepPosition: snapshot
-          ? `muestra ${snapshot.sampleIndex + 1}/${snapshot.sampleCount} · frame ${this.engine.historyIndex + 1}/${this.engine.history.length}`
+          ? currentPhase === 'backward'
+            ? `capa backward ${backwardLayerIndex}/${totalLayerSteps}`
+            : currentPhase === 'forward'
+              ? `capa forward ${forwardLayerIndex}/${totalLayerSteps}`
+              : 'lista para forward'
           : '0 / 0',
-        activeSampleText: snapshot
-          ? `muestra activa ${snapshot.sampleIndex + 1} de ${snapshot.sampleCount}`
-          : 'muestra activa —',
         sampleText: snapshot
           ? `epoca ${snapshot.step} · ${formatSampleLabel(snapshot.inp, snapshot.tgt)}`
           : '—',
+        phaseText,
         visualText: this.tourActive ? this.tourLabel : this.trainingCueText,
-        outputs: outputs.length > 0 ? outputs : createPlaceholderOutputs(),
-        losses:
-          this.engine.generatedEpochs.length > 0
-            ? this.engine.generatedEpochs.map((epochTrace) => epochTrace.averageLoss)
-            : [0],
-        currentLossIndex: snapshot ? Math.max(snapshot.step - 1, 0) : 0,
+        outputs: outputs.length > 0 ? outputs : createPlaceholderOutputs(this.trainingData),
+        losses,
+        currentLossIndex: Math.max(losses.length - 1, 0),
+        canForward: this.engine.canStepForward(),
+        canBackward: this.engine.canStepBackward(),
+        autoActive: this.autoTrain,
+        autoSpeed: this.autoTrainSpeed,
       },
     }
   }
@@ -3082,7 +3207,7 @@ export class NeuralRoomController {
     const snapshot = this.engine.getCurrentSnapshot()
     const outputs = this.engine.getDatasetPredictions().map((prediction) => ({
       label: formatSampleLabel(prediction.input, prediction.target),
-      value: prediction.prediction.toFixed(2),
+      value: formatPredictionValue(prediction.prediction),
       correct: isPredictionAligned(prediction.prediction, prediction.target),
     }))
 
@@ -3208,8 +3333,18 @@ export class NeuralRoomController {
       this.bloomPass.strength = lerp(this.bloomPass.strength, targetStrength, 0.08)
     }
 
-    if (this.autoTrain && this.frameCount % 20 === 0) {
-      this.stepForward()
+    if (this.autoTrain) {
+      this.autoTrainElapsed += delta
+
+      if (this.autoTrainElapsed >= 1 / this.autoTrainSpeed) {
+        this.autoTrainElapsed = 0
+
+        if (this.engine.canStepBackward()) {
+          this.stepBackward()
+        } else {
+          this.stepForward()
+        }
+      }
     }
 
     if (this.composer) {
